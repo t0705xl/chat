@@ -1,0 +1,498 @@
+/* ==========================================================================
+   抖音火花助手 (Douyin Spark AI Agent) - 赛博流光毛玻璃主题样式 (v1.8.0)
+   Tech Stack: CSS3 Glassmorphism / Flexbox / Keyframe Micro-Interactions
+   ========================================================================== */
+
+#dy-spark-root {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  color: #f3f4f6;
+  font-size: 13px;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 浮动唤醒球 - 抖音霓虹双色呼吸灯 */
+#dy-spark-toggle-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #fe2c55 0%, #ff1e56 55%, #25f4ee 140%);
+  box-shadow:
+    0 6px 20px rgba(254, 44, 85, 0.5),
+    0 0 0 2px rgba(255, 255, 255, 0.14),
+    inset 0 2px 4px rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  font-weight: bold;
+  font-size: 22px;
+  position: relative;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+}
+
+#dy-spark-toggle-btn::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(37, 244, 238, 0.45);
+  opacity: 0;
+  transform: scale(0.9);
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+
+#dy-spark-toggle-btn:hover {
+  transform: scale(1.1) translateY(-2px);
+  box-shadow:
+    0 10px 26px rgba(254, 44, 85, 0.68),
+    0 0 14px rgba(37, 244, 238, 0.45);
+}
+
+#dy-spark-toggle-btn:hover::after {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+/* 控制面板主体 */
+#dy-spark-panel {
+  position: absolute;
+  bottom: 66px;
+  right: 0;
+  width: 372px;
+  background: linear-gradient(165deg, rgba(22, 24, 37, 0.96) 0%, rgba(14, 16, 25, 0.98) 100%);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid rgba(37, 244, 238, 0.28);
+  border-radius: 16px;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(254, 44, 85, 0.12);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  transform-origin: bottom right;
+  animation: dySparkPanelIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dySparkPanelIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+#dy-spark-panel.open {
+  display: flex;
+}
+
+/* 顶部品牌栏 */
+.dy-spark-header {
+  padding: 13px 16px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(90deg, rgba(254, 44, 85, 0.14) 0%, rgba(37, 244, 238, 0.06) 100%);
+}
+
+.dy-spark-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dy-spark-title {
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.2px;
+  color: #ffffff;
+}
+
+.dy-spark-logo-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #fe2c55, #ff5e7e);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(254, 44, 85, 0.45);
+}
+
+/* 状态胶囊 */
+.dy-spark-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #9ca3af;
+}
+
+.dy-spark-status-pill.active {
+  background: rgba(32, 213, 126, 0.14);
+  border-color: rgba(32, 213, 126, 0.4);
+  color: #34d399;
+}
+
+.dy-spark-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #6b7280;
+  transition: all 0.25s ease;
+}
+
+.dy-spark-status-dot.active {
+  background-color: #20d57e;
+  box-shadow: 0 0 8px #20d57e;
+}
+
+/* 技术栈徽标行 */
+.dy-spark-tech-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.dy-spark-tech-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.72);
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.dy-spark-tech-tag.cyan {
+  color: #25f4ee;
+  border-color: rgba(37, 244, 238, 0.28);
+  background: rgba(37, 244, 238, 0.08);
+}
+
+.dy-spark-tech-tag.rose {
+  color: #ff7592;
+  border-color: rgba(254, 44, 85, 0.3);
+  background: rgba(254, 44, 85, 0.1);
+}
+
+.dy-spark-close-btn {
+  cursor: pointer;
+  color: #9ca3af;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.dy-spark-close-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 内容滚动区 */
+.dy-spark-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 510px;
+  overflow-y: auto;
+}
+
+.dy-spark-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.dy-spark-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+}
+
+/* 分区卡片容器 */
+.dy-spark-section {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 10px;
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 表单组件 */
+.dy-spark-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dy-spark-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dy-spark-input,
+.dy-spark-textarea {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.dy-spark-input:focus,
+.dy-spark-textarea:focus {
+  border-color: #fe2c55;
+  box-shadow: 0 0 0 2px rgba(254, 44, 85, 0.18);
+}
+
+.dy-spark-textarea {
+  resize: vertical;
+  min-height: 56px;
+  line-height: 1.45;
+}
+
+/* 开关行与现代滑动 Switch */
+.dy-spark-switch-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.dy-spark-toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.dy-spark-toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.dy-spark-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  transition: 0.22s;
+}
+
+.dy-spark-toggle-slider::before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #ffffff;
+  border-radius: 50%;
+  transition: 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.dy-spark-toggle-switch input:checked + .dy-spark-toggle-slider {
+  background: linear-gradient(135deg, #fe2c55, #ff5376);
+  box-shadow: 0 0 10px rgba(254, 44, 85, 0.45);
+}
+
+.dy-spark-toggle-switch input:checked + .dy-spark-toggle-slider::before {
+  transform: translateX(16px);
+}
+
+/* 通用按钮 */
+.dy-spark-btn {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  text-align: center;
+}
+
+.dy-spark-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.dy-spark-btn:active {
+  transform: translateY(0);
+}
+
+/* 人格分组 Tab 切换栏 */
+.dy-spark-persona-tabs {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.dy-spark-persona-tab {
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.16s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dy-spark-persona-tab:hover {
+  background: rgba(255, 255, 255, 0.13);
+  color: #fff;
+}
+
+.dy-spark-persona-tab.active {
+  background: linear-gradient(135deg, rgba(254, 44, 85, 0.28), rgba(254, 44, 85, 0.14));
+  border-color: #fe2c55;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(254, 44, 85, 0.22);
+}
+
+.dy-spark-persona-card {
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dy-spark-badge-count {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.dy-spark-persona-tab.active .dy-spark-badge-count {
+  background: #fe2c55;
+  color: #fff;
+}
+
+/* 视频互动操作台 */
+.dy-spark-video-box {
+  background: linear-gradient(135deg, rgba(254, 44, 85, 0.09) 0%, rgba(37, 244, 238, 0.05) 100%);
+  border: 1px solid rgba(254, 44, 85, 0.26);
+  border-radius: 10px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dy-spark-video-btn-row {
+  display: flex;
+  gap: 6px;
+}
+
+.dy-spark-video-btn {
+  flex: 1;
+  padding: 6px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s;
+  text-align: center;
+}
+
+.dy-spark-video-btn:hover {
+  background: rgba(254, 44, 85, 0.35);
+  border-color: #fe2c55;
+  transform: translateY(-1px);
+}
+
+/* 运行日志终端区 */
+.dy-spark-log-box {
+  background: rgba(6, 8, 14, 0.65);
+  border-radius: 8px;
+  padding: 8px 9px;
+  height: 92px;
+  overflow-y: auto;
+  font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dy-spark-log-box::-webkit-scrollbar {
+  width: 3px;
+}
+
+.dy-spark-log-box::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.dy-spark-log-item {
+  margin-bottom: 3px;
+  word-break: break-all;
+}
+
+.dy-spark-log-item.info { color: #38bdf8; }
+.dy-spark-log-item.success { color: #4ade80; }
+.dy-spark-log-item.warn { color: #fbbf24; }
+.dy-spark-log-item.error { color: #f87171; }
+
+/* 底部技术署名栏 */
+.dy-spark-footer {
+  padding: 7px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
+}

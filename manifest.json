@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "抖音火花助手 AI (DeepSeek 智能社交 Agent)",
+  "version": "1.8.0",
+  "description": "基于 JavaScript ES6+、Manifest V3 与 DeepSeek 大模型的抖音 Web 智能社交 Agent：支持全自动秒回续火花、多维好友人格引擎、7天艾宾浩斯动态记忆库及多模态看片神评互动。",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://api.deepseek.com/*",
+    "https://*.douyin.com/*",
+    "http://127.0.0.1:18991/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.douyin.com/*"
+      ],
+      "css": [
+        "ui.css"
+      ],
+      "js": [
+        "ui.js",
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_icon": "icons/icon48.png",
+    "default_title": "抖音火花助手"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

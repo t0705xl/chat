@@ -1,0 +1,8 @@
+# 忽略个人私密好友记忆档案（仅保留示例模板供开源展示）
+memory_vault/friends/*.md
+!memory_vault/friends/示例好友_模板.md
+
+# 忽略系统临时文件与编辑器缓存
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "decayConfig": {
+    "halfLifeDays": 3.5,
+    "archiveThresholdDays": 7,
+    "minEffectiveWeight": 0.25,
+    "hitBoost": 0.6,
+    "maxWeight": 5
+  },
+  "memories": []
+}
