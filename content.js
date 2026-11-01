@@ -11,6 +11,17 @@
   let lastSwitchedFriendName = "";
   const recentBotReplies = [];
 
+  // 表情包与图片视觉描述内存缓存（src Clean Key -> 描述，跨轮次持久保持，防止历史消息失忆丢失画面）
+  const localMediaDescCache = new Map();
+  function cacheMediaDescription(key, desc) {
+    if (!key || !desc) return;
+    if (localMediaDescCache.size > 600) {
+      const firstKey = localMediaDescCache.keys().next().value;
+      if (firstKey) localMediaDescCache.delete(firstKey);
+    }
+    localMediaDescCache.set(key, desc);
+  }
+
   const REPLY_VARIATION_SEEDS = [
     "【语气节奏】先紧扣对方这句话的具体内容接话，再顺势调侃或反问一句，短促自然（4~15字）",
     "【语气节奏】针对对方刚聊到的具体事情直接给反应（赞同/拆台/吐槽），像真人手机随手秒回，可带1个表情如[狗头][裂开]",
@@ -871,29 +882,52 @@
   }
 
   /**
-   * 调用后台视觉模型解析图片/表情包/动图画面内容 (v2.1.0)
+   * 调用后台视觉模型解析图片/表情包/动图画面内容 (v2.2.0)
    */
-  async function enrichMediaDescriptions(unreadIncoming, visionConfig) {
+  async function enrichMediaDescriptions(items, visionConfig) {
     if (!visionConfig || !visionConfig.enabled || !visionConfig.apiKey) return;
-    for (const m of unreadIncoming) {
-      if ((m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && m.mediaSrc) {
-        // 如果已经通过 React Fiber 拿到了具体的官方贴纸含义，直接使用，无需消耗视觉 API
-        if (m.hasSpecificMeaning && m.text && !m.text.includes("发来一个抖音表情")) {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    for (const m of items) {
+      if ((m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && (m.mediaSrc || m.dataUrl)) {
+        const cleanKey = (m.mediaSrc || "").split("?")[0] || (m.dataUrl ? m.dataUrl.slice(0, 48) : "");
+
+        // 1. 本地内存命中：直接复用，免发后台请求
+        if (cleanKey && localMediaDescCache.has(cleanKey)) {
+          const cached = localMediaDescCache.get(cleanKey);
+          m.text = `[发来图片/表情包，画面内容: ${cached}]`;
+          m.hasSpecificMeaning = true;
+          m.isUnlabeledSticker = false;
+          if (m.mediaElement && m.mediaElement.dataset) {
+            m.mediaElement.dataset.dyStickerMeaning = cached;
+          }
           continue;
         }
+
+        // 2. 如果已经通过 React Fiber 拿到了具体的官方贴纸含义，直接使用，无需消耗视觉 API
+        if (m.hasSpecificMeaning && m.text && !m.text.includes("发来一个抖音表情") && !m.text.includes("发来一张图片")) {
+          continue;
+        }
+
         try {
           const res = await sendMessageWithTimeout(
             {
               action: "DESCRIBE_MEDIA",
               src: m.mediaSrc,
               dataUrl: m.dataUrl || "",
-              cacheKey: m.mediaSrc.split("?")[0],
+              cacheKey: cleanKey,
               vision: visionConfig
             },
             10000
           );
           if (res && res.success && res.desc) {
             const desc = res.desc.replace(/[\r\n\t]/g, " ").trim();
+            if (cleanKey) {
+              cacheMediaDescription(cleanKey, desc);
+            }
+            if (m.mediaElement && m.mediaElement.dataset) {
+              m.mediaElement.dataset.dyStickerMeaning = desc;
+            }
             m.text = `[发来图片/表情包，画面内容: ${desc}]`;
             m.hasSpecificMeaning = true;
             m.isUnlabeledSticker = false;
@@ -977,20 +1011,28 @@
       if (isChatAvatarImage(media, containerRect)) continue;
 
       const ownership = analyzeMessageOwnership(media, container, containerRect, containerMidX);
-      const rawAlt = (
-        (media.dataset && media.dataset.dyStickerMeaning) ||
-        media.getAttribute("alt") ||
-        media.getAttribute("title") ||
-        media.getAttribute("aria-label") ||
-        ""
-      ).trim();
-
       const mediaSrc = media.currentSrc || media.src || media.getAttribute("src") || "";
       let dataUrl = "";
       if (media.tagName === "CANVAS") {
         try {
           dataUrl = media.toDataURL("image/jpeg", 0.85);
         } catch (e) {}
+      }
+
+      const cleanSrc = (mediaSrc || "").split("?")[0];
+      const cachedDesc = cleanSrc ? (localMediaDescCache.get(cleanSrc) || "") : "";
+
+      const rawAlt = (
+        (media.dataset && media.dataset.dyStickerMeaning) ||
+        cachedDesc ||
+        media.getAttribute("alt") ||
+        media.getAttribute("title") ||
+        media.getAttribute("aria-label") ||
+        ""
+      ).trim();
+
+      if (cachedDesc && media.dataset && !media.dataset.dyStickerMeaning) {
+        media.dataset.dyStickerMeaning = cachedDesc;
       }
 
       // 过滤掉无具体含义的通用占位词（如“动画表情”、“图片”、“表情”）
@@ -1142,7 +1184,7 @@
     const combinedText = unreadIncomingList.map(m => m.text).join(" ");
 
     // 1. 攻击性/骂人/粗口挑衅特征词库
-    const aggressiveRegex = /(傻逼|煞笔|沙比|sb|脑瘫|有病|神经病|神金|滚|爬|狗叫|你妈|他妈|tm|cnm|nm|大爷|你爹|我是你爹|叫爸爸|孙子|儿子|废物|菜逼|真菜|垃圾|出生|畜生|铸币|小丑|弱智|智障|去死|死吧|闭嘴|放屁|关你屁事|有屁|眼瞎|瞎了|犯病|发癫|猪吧|狗东西|贱|恶心|傻子|大傻春|白痴|蠢|锤子|揍你|打死你|发怒|便便)/i;
+    const aggressiveRegex = /(傻逼|煞笔|沙比|sb|脑瘫|有病|神经病|神金|滚|爬|狗叫|你妈|他妈|tm|cnm|nm|大爷|你爹|我是你爹|叫爸爸|孙子|儿子|废物|菜逼|真菜|垃圾|出生|畜生|铸币|小丑|弱智|智障|去死|死吧|闭嘴|放屁|关你屁事|有屁|眼瞎|瞎了|犯病|发癫|猪吧|狗东西|贱|恶心|傻子|大傻春|白痴|蠢|锤子|揍你|打死你|发怒|便便|吃屎|去吃屎|多吃点屎|喂你吃)/i;
     if (aggressiveRegex.test(combinedText)) {
       return "AGGRESSIVE";
     }
@@ -1159,7 +1201,65 @@
   }
 
   /**
-   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.1.0)
+   * 检测对话中是否存在恶意语言陷阱/套路/占便宜/恶心自贬陷阱 (v2.2.0)
+   */
+  function detectConversationalTrap(unreadIncomingList, historySlice) {
+    const unreadText = unreadIncomingList.map(m => m.text).join(" ");
+    const recentHistoryText = (historySlice || []).slice(-8).map(m => m.text).join(" ");
+    const combinedContext = `${recentHistoryText} | ${unreadText}`;
+
+    // 1. 喂食/吃恶心东西陷阱（如前面有狗拉屎/便便/垃圾图，对方说“喂你吃”、“请你吃”、“你只是想吃”）
+    const hasDisgustingContext = /(拉屎|大便|便便|屎|狗屎|猫砂|马桶|垃圾|呕吐|吐了|恶心)/i.test(combinedContext);
+    const hasFeedingBait = /(喂你|请你吃|给你吃|喂你吃|尝尝|多吃点|吃饱|好不好吃|香不香|你只是想吃|想吃就直说|是不是想吃|张嘴|吃这个)/i.test(unreadText);
+    if (hasDisgustingContext && hasFeedingBait) {
+      return {
+        isTrap: true,
+        type: "FEEDING_POOP_TRAP",
+        instruction: "【⚠️ 极度危险圈套：对方在前文发了拉屎/便便/恶心画面后，企图诱导你吃屎或喂你吃！】\n【绝对禁止】：严禁顺从或开玩笑说“我张嘴了”、“你喂吧”、“真香”、“被你看穿了”、“我想吃”！\n【必须反击】：立刻用犀利的损友语气狠狠怼回去，识破对方恶心圈套！例如：“喂你妈呢你自己慢慢吃吧[白眼]”、“恶心不恶心啊你留着当夜宵吧”、“吃你大爷[吐]”、“想喂你自己吃个饱[裂开]”。"
+      };
+    }
+
+    // 2. 诱导自贬/承认吃恶心东西或想吃
+    if (/(你只是想吃|你就是想吃|承认吧|你想吃|吃屎|去吃屎|多吃点屎)/i.test(unreadText)) {
+      return {
+        isTrap: true,
+        type: "ADMIT_EATING_TRAP",
+        instruction: "【⚠️ 陷阱提醒：对方逼你承认想吃屎或自贬】\n【绝对禁止】：严禁说“被你看穿了”、“被你发现了”、“对我想吃”！\n【必须反应】：直接反驳驳回，反客为主！（如：“吃你大爷[白眼]”、“我看你想吃想疯了”、“你自己吃撑了吧少甩锅”、“滚一边去[裂开]”）。"
+      };
+    }
+
+    // 3. 无由投喂或莫名其妙说“喂你吃”
+    if (/(喂你吃|喂你|喂一口|给你吃|张嘴喂你)/i.test(unreadText) && !/(饭|面|奶茶|火锅|肯德基|麦当劳|肉|蛋糕|水果)/.test(unreadText)) {
+      return {
+        isTrap: true,
+        type: "SUSPICIOUS_FEEDING",
+        instruction: "【⚠️ 防下套提醒：对方突然说要喂你吃/请你吃（动机可疑）】\n【绝对禁止】：严禁无脑答应或张嘴说“我张嘴了”！\n【必须反应】：保持警惕与机敏，带刺调侃或反问（如：“喂什么啊就喂[白眼]”、“你又憋什么坏屁呢”、“喂你大爷”、“拿开拿开，你自己吃”）。"
+      };
+    }
+
+    // 4. 占辈分便宜/认儿子/叫爹陷阱
+    if (/(叫爸爸|叫爹|我是你爹|叫声爹|做我儿子|喊爸爸|叫声爸爸|乖儿子|孙子)/i.test(unreadText)) {
+      return {
+        isTrap: true,
+        type: "FAMILY_HIERARCHY_TRAP",
+        instruction: "【⚠️ 辈分陷阱：对方企图占你便宜当爹】\n【绝对禁止】：严禁叫爹、叫爸爸或顺从！\n【必须反应】：直接强势回怼占回辈分！（如：“滚你大爷的我才是你爹”、“做你春秋大梦去吧[狗头]”、“逆子反了天了”、“给你两巴掌清醒清醒[裂开]”）。"
+      };
+    }
+
+    // 5. 逼学动物叫/侮辱陷阱
+    if (/(叫一声|学狗叫|学猫叫|汪一声|汪汪汪|你就是狗|承认你是狗)/i.test(unreadText)) {
+      return {
+        isTrap: true,
+        type: "ANIMAL_TRAP",
+        instruction: "【⚠️ 侮辱陷阱：对方让你学狗叫或贬低你是狗】\n【绝对禁止】：严禁发出“汪汪”或承认自己是狗！\n【必须反击】：直接怼回去（如：“你叫一个我听听[白眼]”、“神金吧你”、“咬你一口要不要[狗头]”）。"
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.2.0)
    */
   function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null, friendName = "") {
     const friendReplies = recentBotRepliesByFriend.get(friendName) || recentBotReplies.slice(-5);
@@ -1195,9 +1295,9 @@
       tonePrompt = `【当前情境】对方在正常交流/问问题/聊日常，没有攻击你。像真实好朋友一样自然、靠谱地正面回答，绝对禁止无故骂人或攻击，随性口语（4~18字），不加句号。`;
     }
 
-    // 提取当前未读消息之前的最近 10 条真实历史记录
+    // 提取当前未读消息之前的最近 18 条真实历史记录（加长上下文记忆，彻底告别单字短记忆失忆与呆滞）
     const historyEndIdx = Math.max(0, allMessages.length - unreadIncomingList.length);
-    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 10), historyEndIdx);
+    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 18), historyEndIdx);
     const lastHistoryTopic = historySlice.length > 0 ? historySlice[historySlice.length - 1].text : "";
 
     const rawTexts = unreadIncomingList.map(m => m.text);
@@ -1209,7 +1309,7 @@
     let mediaInstruction = "";
     if (hasSpecificMeaningSticker) {
       const meanings = unreadIncomingList.filter(m => m.hasSpecificMeaning).map(m => m.text);
-      mediaInstruction = `\n对方发来了表情包/图片：${meanings.join(" ")}。请结合画面里的具体内容或文字接梗、吐槽或回应，像真人看到朋友发这图时的即时反应！`;
+      mediaInstruction = `\n对方发来了表情包/图片：${meanings.join(" ")}。请结合画面里的具体搞怪动作或文字接梗、吐槽或回应，像真人看到朋友发这图时的即时反应！`;
     } else if (allAreStickers) {
       if (hasUnlabeledSticker) {
         mediaInstruction = lastHistoryTopic
@@ -1220,9 +1320,24 @@
       mediaInstruction = `\n对方分享了抖音视频：${rawTexts.join(" ")}。针对视频内容随口接话或吐槽，4~16字。`;
     }
 
+    // 防套路与反恶搞语言圈套检测
+    const trapCheck = detectConversationalTrap(unreadIncomingList, historySlice);
+    let trapPrompt = "";
+    if (trapCheck && trapCheck.isTrap) {
+      trapPrompt = `\n${trapCheck.instruction}`;
+      if (window.DySparkUI) {
+        window.DySparkUI.log(`🛡️ 识破语言陷阱 [${trapCheck.type}]，已触发防套路防御`, "warn");
+      }
+    }
+
+    const commonSenseRule = `\n【防套路常识与自尊底线】
+1. 严禁掉入对方的恶意或恶搞语言圈套！绝不能答应吃恶心东西、吃屎，对方说“喂你吃/请你吃”恶心东西或前文发了拉屎图，绝不能说“我张嘴了”、“你喂吧”、“被你看穿了”、“我想吃”，必须机敏识破并反怼对方（如“喂你妈呢你自己吃吧”、“恶心不恶心”）；
+2. 绝不能被占便宜当儿子或认爹，对方叫你喊爹坚决怼回；
+3. 听懂网络热梗与阴阳怪气，结合前文真实历史与表情包画面连贯理解，严禁无脑顺从对方的恶俗调侃。`;
+
     const enhancedSystemPrompt = `你是这个抖音号的号主本人，正拿着手机跟朋友私聊。
 ${persona.prompt}
-${tonePrompt}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
+${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
 【硬性要求】短句（几个字到十来字），随性自然，完全像手机打字，严禁句号“。”，严禁任何AI助理式客套与解释，只输出你要发送的那句话。`;
 
     const payload = [{ role: "system", content: enhancedSystemPrompt }];
@@ -1389,9 +1504,16 @@ ${tonePrompt}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
       unreadIncoming = refreshedUnread;
     }
 
-    // 视觉模型增强：如果收到图片/表情包/动图，尝试调用视觉模型识别具体画面
+    // 视觉模型增强：解析待回复消息中的图片/表情包，同时自动为最近历史切片中未解析的表情包补齐画面描述（最多补2张），确保上下文连贯不失忆
     const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
-    await enrichMediaDescriptions(unreadIncoming, visionConfig);
+    const itemsToEnrich = [...unreadIncoming];
+    const historyCandidates = messages
+      .slice(Math.max(0, messages.length - unreadIncoming.length - 8), Math.max(0, messages.length - unreadIncoming.length))
+      .filter(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && !m.hasSpecificMeaning && (m.mediaSrc || m.dataUrl));
+    for (const hc of historyCandidates.slice(-2)) {
+      itemsToEnrich.push(hc);
+    }
+    await enrichMediaDescriptions(itemsToEnrich, visionConfig);
 
     const preFlightFriendElements = new Set(
       messages.filter(m => !m.isSelf).map(m => m.element)
@@ -1518,7 +1640,12 @@ ${tonePrompt}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
 
     window.DySparkUI.log(`[测试发送] 好友[${friendName}] 启用人格【${persona.groupName}】...`, "info");
     const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
-    await enrichMediaDescriptions([lastMsg], visionConfig);
+    const testItems = [lastMsg];
+    const historyCand = messages
+      .slice(Math.max(0, messages.length - 6))
+      .filter(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && !m.hasSpecificMeaning && (m.mediaSrc || m.dataUrl));
+    for (const hc of historyCand.slice(-2)) testItems.push(hc);
+    await enrichMediaDescriptions(testItems, visionConfig);
     const payload = buildHumanizedPayload(persona, messages, [lastMsg], null, friendName);
 
     const res = await sendMessageWithTimeout(
@@ -1544,7 +1671,7 @@ ${tonePrompt}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
 
   function runDiagnose() {
     const config = window.DySparkUI ? window.DySparkUI.getConfig() : {};
-    window.DySparkUI.log("===== 开始全面诊断 (v2.1.0) =====", "info");
+    window.DySparkUI.log("===== 开始全面诊断 (v2.2.0) =====", "info");
 
     const unread = findUnreadRedDots();
     if (unread.length > 0) {

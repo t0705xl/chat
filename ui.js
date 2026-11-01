@@ -236,7 +236,7 @@
 
         <div class="dy-spark-footer">
           <span>Powered by JavaScript ES6+ · Node.js · DeepSeek LLM</span>
-          <span>v2.1.0</span>
+          <span>v2.2.0</span>
         </div>
       </div>
     `;
@@ -729,7 +729,7 @@
 
         renderPersonaTabsAndCard(false);
         updateStatus(currentConfig.enabled);
-        log("抖音火花助手 AI 已就绪 (v2.1.0 并发调度+视觉识别版)", "info");
+        log("抖音火花助手 AI 已就绪 (v2.2.0 网络梗图识别+防套路自卫版)", "info");
         if (!currentConfig.visionApiKey) {
           log("ℹ 未填视觉模型 Key：图片/表情包将无法识别画面内容", "warn");
         }
