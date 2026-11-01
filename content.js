@@ -779,22 +779,33 @@
       if (isChatAvatarImage(media, containerRect)) continue;
 
       const ownership = analyzeMessageOwnership(media, container, containerRect, containerMidX);
-      const altText = (media.getAttribute("alt") || media.getAttribute("title") || "").trim();
+      const rawAlt = (
+        (media.dataset && media.dataset.dyStickerMeaning) ||
+        media.getAttribute("alt") ||
+        media.getAttribute("title") ||
+        media.getAttribute("aria-label") ||
+        ""
+      ).trim();
+
+      // 过滤掉无具体含义的通用占位词（如“动画表情”、“图片”、“表情”）
+      const isGenericAlt = /^(表情|\[表情\]|动画表情|\[动画表情\]|图片|\[图片\]|sticker|emoji|image)$/i.test(rawAlt);
+      const specificMeaning = isGenericAlt ? "" : rawAlt;
 
       // 判断是否为小尺寸抖音原生 Emoji（如 [狗头]、[捂脸]，通常 18px~58px）
       if (mRect.width < 60 && mRect.height < 60) {
-        // 必须位于聊天气泡区域内部（不能贴着容器最外侧边缘，排除小图标按钮）
         if (mRect.left < containerRect.left + 44 || mRect.right > containerRect.right - 44) continue;
-        const emojiLabel = altText
-          ? (altText.startsWith("[") ? altText : `[${altText}]`)
+        const emojiLabel = specificMeaning
+          ? (specificMeaning.startsWith("[") ? specificMeaning : `[${specificMeaning}]`)
           : "[表情]";
         const distLeft = Math.round(ownership.bubbleRect.left - containerRect.left);
         const distRight = Math.round(containerRect.right - ownership.bubbleRect.right);
 
         rawItems.push({
           element: ownership.rowElement || media,
-          text: `[发来表情: ${emojiLabel}]`,
+          text: specificMeaning ? `[发来表情: ${emojiLabel}]` : `[发来一个抖音表情]`,
           inlineEmoji: emojiLabel,
+          hasSpecificMeaning: !!specificMeaning,
+          isUnlabeledSticker: !specificMeaning,
           msgType: "sticker",
           isSelf: ownership.isSelf,
           reason: ownership.reason,
@@ -814,11 +825,15 @@
 
       let mediaDesc = "";
       let msgType = "sticker";
+      let isUnlabeledSticker = false;
       if (isVideoShare) {
         msgType = "video";
         mediaDesc = cardText ? `[分享了抖音视频: ${cardText.substring(0, 35)}]` : `[分享了一个抖音视频]`;
+      } else if (specificMeaning) {
+        mediaDesc = `[发来表情包，画面含义: ${specificMeaning}]`;
       } else {
-        mediaDesc = altText ? `[发来表情包: ${altText}]` : `[发来一个表情包/图片]`;
+        isUnlabeledSticker = true;
+        mediaDesc = `[发来一张自定义图片表情包]`;
       }
 
       const distLeft = Math.round(ownership.bubbleRect.left - containerRect.left);
@@ -827,6 +842,8 @@
       rawItems.push({
         element: ownership.rowElement || media,
         text: mediaDesc,
+        hasSpecificMeaning: !!specificMeaning,
+        isUnlabeledSticker: isUnlabeledSticker,
         msgType: msgType,
         isSelf: ownership.isSelf,
         reason: ownership.reason,
@@ -854,7 +871,8 @@
         if (!alreadyHasRow) {
           rawItems.push({
             element: ownership.rowElement || div,
-            text: "[发来一个动态表情包]",
+            text: "[发来一张自定义图片表情包]",
+            isUnlabeledSticker: true,
             msgType: "sticker",
             isSelf: ownership.isSelf,
             reason: ownership.reason,
@@ -870,7 +888,6 @@
     rawItems.sort((a, b) => a.top - b.top || a.distLeft - b.distLeft);
 
     // 4. 仅合并【同一个消息行 DOM 节点 (prev.element === item.element)】内部的文本与行内小表情！
-    // 严禁把上下相邻的两条独立消息合并到旧节点上（那会导致新发的消息共用已回复旧节点引用而罢工！）
     const merged = [];
     for (const item of rawItems) {
       const prev = merged[merged.length - 1];
@@ -880,6 +897,7 @@
         } else if (prev.inlineEmoji && item.msgType === "text") {
           prev.text = `${prev.inlineEmoji}${item.text}`;
           prev.msgType = "text";
+          prev.isUnlabeledSticker = false;
         } else if (prev.inlineEmoji && item.inlineEmoji) {
           prev.text = `[发来表情: ${prev.inlineEmoji}${item.inlineEmoji}]`;
         } else if (prev.msgType === "text" && item.msgType === "text") {
@@ -897,16 +915,41 @@
   }
 
   /**
-   * 构建高拟真、强语境锁定的对话 Payload (v1.9.0)
-   * 核心升级：
-   * 1. 移除会污染上下文的伪造 Few-Shot 历史轮次（防止 AI 误以为刚才聊了“吃了吗/干嘛呢”而答非所问）；
-   * 2. 传入最近 10 条真实聊天上下文并合并同角色连续发言，让 AI 真正听懂前因后果；
-   * 3. 区分“正常分2~3句说话”与“真正恶意刷屏”，并针对表情包互动给出精准斗图反应指令。
+   * 识别对方本轮发来的消息语气（三级情绪镜像检测器）：
+   * - AGGRESSIVE: 对方言语带明显攻击性、脏话、侮辱或恶意挑衅 -> 才允许使用低素质粗口互怼！
+   * - PLAYFUL: 对方在轻微嘴贫、调侃开玩笑或斗图 -> 用幽默风趣接梗，不骂脏话！
+   * - NORMAL: 对方正常说话、问问题、聊日常 -> 必须100%正常好好回复，严禁为了攻击而攻击！
+   */
+  function analyzeIncomingTone(unreadIncomingList) {
+    const combinedText = unreadIncomingList.map(m => m.text).join(" ");
+
+    // 1. 攻击性/骂人/粗口挑衅特征词库
+    const aggressiveRegex = /(傻逼|煞笔|沙比|sb|脑瘫|有病|神经病|神金|滚|爬|狗叫|你妈|他妈|tm|cnm|nm|大爷|你爹|我是你爹|叫爸爸|孙子|儿子|废物|菜逼|真菜|垃圾|出生|畜生|铸币|小丑|弱智|智障|去死|死吧|闭嘴|放屁|关你屁事|有屁|眼瞎|瞎了|犯病|发癫|猪吧|狗东西|贱|恶心|傻子|大傻春|白痴|蠢|锤子|揍你|打死你|发怒|便便)/i;
+    if (aggressiveRegex.test(combinedText)) {
+      return "AGGRESSIVE";
+    }
+
+    // 2. 轻微嘴贫/调侃/开玩笑特征
+    const playfulRegex = /(哈哈|笑死|笑尿|略略略|嘿嘿|切|啧|就这|不会吧|该不会|吹牛|装逼|老六|坑爹|下饭|抠脚|单身狗|显眼包|666|牛逼|狗头|裂开|捂脸|泣不成声|吃瓜|白眼)/i;
+    const allStickers = unreadIncomingList.every(m => m.msgType === "sticker");
+    if (playfulRegex.test(combinedText) || allStickers) {
+      return "PLAYFUL";
+    }
+
+    // 3. 默认：对方在正常好好说话
+    return "NORMAL";
+  }
+
+  /**
+   * 构建高拟真、情绪对等自适应的对话 Payload (v2.0.0)
+   * 核心突破：
+   * 1. 【情绪对等镜像】：对方没嘴贫/没骂人时，100% 正常友好回复；仅当对方言语带攻击性时，才激活低素质互怼反击！
+   * 2. 【防表情包乱回复】：对于看不到画面的自定义图片表情包，严禁瞎猜画面内容或无故攻击，改为顺着上一句话题接话或回百搭表情。
    */
   function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null) {
     const recentSelfSent = recentBotReplies.slice(-6);
     const antiRepeatRule = recentSelfSent.length > 0
-      ? `\n【防复读禁令】你最近几句已经发过：[${recentSelfSent.join(" / ")}]。本次绝对禁止重复上面用过的词句、句式或相同的吐槽梗！`
+      ? `\n【防复读禁令】你最近几句已经发过：[${recentSelfSent.join(" / ")}]。本次绝对禁止重复上面用过的词句或句式！`
       : "";
 
     const randomSeed = REPLY_VARIATION_SEEDS[Math.floor(Math.random() * REPLY_VARIATION_SEEDS.length)];
@@ -920,57 +963,71 @@
         const memLines = memoryContext.memories.map(
           m => `- [权重${m.effectiveWeight || m.weight}] ${m.fact}`
         );
-        memorySection += `\n【你们近7天的相关共同记忆 (仅在话题自然契合时顺嘴带出，不要强行背诵)】\n${memLines.join("\n")}`;
+        memorySection += `\n【你们近7天的相关共同记忆 (仅在话题自然契合时顺嘴带出，不要生硬背诵)】\n${memLines.join("\n")}`;
       }
     }
 
-    const isRoughStyle = persona.groupId === "bro" || /脏话|损友|死党|互怼|互骂|粗口|傻逼|卧槽|滚/.test(persona.prompt);
+    const incomingTone = analyzeIncomingTone(unreadIncomingList);
+    const isRoughPersona = persona.groupId === "bro" || /脏话|损友|死党|互怼|互骂|粗口|傻逼|卧槽|滚/.test(persona.prompt);
 
-    const styleExamples = isRoughStyle
-      ? `【真人损友高情商互怼准则（必须先接话再损人，严禁答非所问！）】
-1. 黄金法则：不管你怎么骂他、损他，必须【100%紧扣他刚说的这件具体事情】！先听懂他在聊什么，顺着这件事的逻辑去拆台或吐槽，绝不能闭着眼睛乱飙一句跟当前话题毫无关系的固定脏话！
-2. 正确接话示范（注意看如何紧扣对方话题）：
-   - 对方说“我刚打瓦五连跪心态崩了” -> 你回：“菜就多练臭傻逼，有你这人体描边大师队友不举报你都算心地善良[裂开]”
-   - 对方说“今晚几点上号” -> 你回：“十点左右吧，我先去洗个澡，你小子别又秒选亚索坑爹[狗头]”
-   - 对方说“[发来一个表情包/图片]” -> 你回：“从哪偷来的弱智表情包，纯纯在演你现在的精神状态[泣不成声]”
-   - 对方说“周末出来吃火锅啊” -> 你回：“行啊你请客我立马滚出来，AA的话容朕考虑一秒[狗头]”
-3. 严禁客服腔、严禁句号“。”和波浪号“~”，单句控制在 4~18 字，自然穿插抖音表情码如 [狗头] [裂开] [白眼] [泣不成声] [捂脸] [666]。`
-      : `【真人日常聊天准则（必须听懂人话，严禁答非所问！）】
-1. 先看清对方这句话具体在问什么、聊什么事，直接针对这件事自然接话、回应或反问，有来有回；
-2. 像平时拿手机发微信一样随性接地气（4~18字），严禁句号“。”和波浪号“~”，可自然带1个抖音表情如 [捂脸] [狗头] [裂开] [泣不成声] [吃瓜]；`;
+    // 根据【对方本轮的真实语气】动态切换回复策略（彻底解决“为了攻击而攻击”）
+    let toneRuleSection = "";
+    if (incomingTone === "AGGRESSIVE" && isRoughPersona) {
+      toneRuleSection = `【⚡ 当前对方语气判定：言语带攻击性/挑衅 -> 触发低素质互怼反击模式！】
+1. 对方这句话先对你嘴臭、骂人或挑衅了！请立即解除文明限制，针对他刚说的具体事情，用死党间狠辣接地气的粗口（如：不是哥们、你有病吧、臭傻逼、滚犊子、纯纯大傻春、狗叫什么、神金、菜就多练）直接怼回去！
+2. 怼人也必须紧扣他说的话题（比如他骂你菜你就损他战绩，他骂你有病你就损他精神状态），单句 4~16 字，搭配 [白眼] [裂开] [狗头] [泣不成声]。`;
+    } else if (incomingTone === "PLAYFUL") {
+      toneRuleSection = `【😄 当前对方语气判定：朋友调侃/轻微嘴贫/发表情 -> 启用幽默接梗模式】
+1. 对方并没有恶意骂人，只是在跟你开玩笑、贫嘴或发表情互动。
+2. 请用轻松好玩、幽默风趣的好朋友语气自然接话或回敬表情（如 [狗头] [捂脸] [泣不成声] [吃瓜]），【本次禁止使用低俗脏话骂人，禁止为了攻击而攻击】！`;
+    } else {
+      toneRuleSection = `【🌿 当前对方语气判定：正常好好说话 -> 强制启用和平正常回复模式！】
+1. 【最高铁律】对方这句话是在跟你正常交流/问问题/聊日常，完全没有嘴贫，也没有攻击你！
+2. 你必须 100% 像一个正常、靠谱、自然的好朋友一样，认真听懂并正面回复他说的具体事情！
+3. 【绝对禁止】本次严禁说任何脏话、严禁损人、严禁阴阳怪气、严禁为了攻击而攻击！像正常人发微信一样随性自然（4~18字），不加句号“。”。`;
+    }
+
+    // 提取当前未读消息之前的最近 10 条真实历史记录
+    const historyEndIdx = Math.max(0, allMessages.length - unreadIncomingList.length);
+    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 10), historyEndIdx);
+    const lastHistoryTopic = historySlice.length > 0 ? historySlice[historySlice.length - 1].text : "";
 
     // 整理对方本次未读消息的核心语义
     const rawTexts = unreadIncomingList.map(m => m.text);
     const allAreStickers = unreadIncomingList.every(m => m.msgType === "sticker");
+    const hasUnlabeledSticker = unreadIncomingList.some(m => m.isUnlabeledSticker);
     const allAreVideos = unreadIncomingList.every(m => m.msgType === "video");
 
     let latestTopicSummary = rawTexts.join("，");
     let incomingInstruction = "";
 
     if (allAreStickers) {
-      incomingInstruction = `【当前情境】对方刚刚发来了表情包/表情：${rawTexts.join(" ")}。请结合你们上一句聊的话题（如果有），或者直接针对他发这个表情包/斗图的行为，用你的人设语气带抖音表情码（如[狗头][裂开][白眼][泣不成声]）俏皮回怼或斗图接话（3~14字），绝不要发呆！`;
+      if (hasUnlabeledSticker) {
+        // 针对看不到具体画面的自定义图片表情包：严禁瞎猜画面导致乱回复！
+        incomingInstruction = lastHistoryTopic
+          ? `【表情包防乱回指令】对方刚发了一张自定义图片表情包（你看不到图里的具体画面）。【严禁瞎猜表情包里画了什么！严禁无故骂表情包！】请直接顺着你们上一句聊的话题（“${lastHistoryTopic}”）自然接一句话，或者直接回一个百搭反应（如：“哈哈哈哈[泣不成声]”、“？[狗头]”、“服了你了[捂脸]”、“斗图是吧[狗头]”）。`
+          : `【表情包防乱回指令】对方单发了一张自定义图片表情包（你看不到图里的具体画面）。【严禁瞎编表情包画面内容！严禁无缘无故攻击骂人！】请直接用真实人类收到朋友表情包时的百搭自然短句回应（例如：“？一上来就发表情包[狗头]”、“哈哈哈哈啥意思[捂脸]”、“[狗头][狗头]”、“有事说事别光发表情包啊[吃瓜]”），控制在 2~12 字！`;
+      } else {
+        // 已知具体含义的表情（如 [狗头]、[捂脸]、[大哭]）
+        incomingInstruction = `【当前情境】对方发来了表情：${rawTexts.join(" ")}。请结合表情的含义与刚才聊的话题，自然回敬一个表情或简短接话（2~12字），不要无故骂人！`;
+      }
     } else if (allAreVideos) {
-      incomingInstruction = `【当前情境】对方给你分享了抖音视频：${rawTexts.join(" ")}。请结合视频标题内容，用你的人设口吻简短吐槽或接话（4~16字）！`;
+      incomingInstruction = `【当前情境】对方给你分享了抖音视频：${rawTexts.join(" ")}。请结合视频标题内容，用正常朋友口吻简短接话或讨论（4~16字）！`;
     } else if (unreadIncomingList.length >= 4) {
-      incomingInstruction = `【当前情境】对方一口气连发了 ${unreadIncomingList.length} 条消息：“${rawTexts.join(" / ")}”。请先正面回应他说的核心事情，顺嘴吐槽他像机关枪一样连发消息！`;
+      incomingInstruction = `【当前情境】对方连续发了 ${unreadIncomingList.length} 条消息：“${rawTexts.join(" / ")}”。请把它们合起来理解，直接正面回应他最核心的问题或话题！`;
     } else if (unreadIncomingList.length > 1) {
-      // 2~3条属于真人正常的分段打字说话，必须合并理解语义，不要误判为恶意刷屏！
-      incomingInstruction = `【当前情境】对方连续发了 ${unreadIncomingList.length} 句话：“${rawTexts.join("，")}”。这是对方分段把一句话说完，请把这几句连起来理解完整意思，直接针对他说的核心内容自然回复！`;
+      incomingInstruction = `【当前情境】对方分 ${unreadIncomingList.length} 句说了一件事：“${rawTexts.join("，")}”。请把这几句连起来理解完整意思，直接针对他说的核心内容自然回复！`;
     } else {
-      incomingInstruction = `【当前必须正面回应的对方原话】：“${latestTopicSummary}”\n👉 请务必针对这句话的具体内容接话，严禁答非所问！`;
+      incomingInstruction = `【当前必须正面回应的对方原话】：“${latestTopicSummary}”\n👉 请务必针对这句话的具体内容接话，对方正常说话你就正常回答，严禁答非所问，严禁无故攻击！`;
     }
 
-    const enhancedSystemPrompt = `[系统角色设定：真实人类抖音私信日常聊天，请完全代入角色性格与好友自然对话]
+    const enhancedSystemPrompt = `[系统角色设定：真实人类抖音私信聊天，请完全遵循下方情绪对等指令与好友自然对话]
 ${persona.prompt}
-${styleExamples}${memorySection}
+${toneRuleSection}${memorySection}
 ${randomSeed}${antiRepeatRule}
 ${incomingInstruction}`;
 
     const payload = [{ role: "system", content: enhancedSystemPrompt }];
-
-    // 提取当前未读消息之前的最近 10 条真实历史记录，并合并连续相同角色的发言以保证严格交替
-    const historyEndIdx = Math.max(0, allMessages.length - unreadIncomingList.length);
-    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 10), historyEndIdx);
 
     for (const h of historySlice) {
       const role = h.isSelf ? "assistant" : "user";
@@ -982,7 +1039,6 @@ ${incomingInstruction}`;
       }
     }
 
-    // 将本次对方发来的未读消息作为最后一条 user 消息传入
     const userMessageContent = rawTexts.join("，");
     const lastTurn = payload[payload.length - 1];
     if (lastTurn && lastTurn.role === "user") {
@@ -1143,11 +1199,19 @@ ${incomingInstruction}`;
       : { groupId: "default", groupName: "默认通用", prompt: config.prompt };
 
     const displayIncoming = unreadIncoming.map(m => m.text).join(" | ");
+    const detectedTone = analyzeIncomingTone(unreadIncoming);
+    const toneLabel =
+      detectedTone === "AGGRESSIVE"
+        ? "🔥 对等反击(对方带攻击性)"
+        : detectedTone === "PLAYFUL"
+          ? "😄 幽默接梗(对方调侃/斗图)"
+          : "🌿 和平正常回复(对方未嘴贫)";
+
     window.DySparkUI.log(
       `收到${chatType} [${friendName}] ${unreadIncoming.length > 1 ? `(合并${unreadIncoming.length}条) ` : ""}消息: "${displayIncoming}"`,
       "info"
     );
-    window.DySparkUI.log(`🎭 启用人格【${persona.groupName}】思考中...`, "info");
+    window.DySparkUI.log(`🎭 人格【${persona.groupName}】| 策略【${toneLabel}】思考中...`, "info");
 
     try {
       // 【1.2秒极速超时检索记忆】：绝不因为记忆服务慢而卡死聊天回复！

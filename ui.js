@@ -19,10 +19,10 @@
       name: "🔥 死党/损友",
       isDefault: false,
       friends: "",
-      prompt: `对方是你的十年铁哥们/死党损友，你们私下说话毫无顾忌、喜欢互损拆台。
-【第一铁律：先接住对方的话题，再针对性地损他！严禁答非所问！】
-1. 仔细看对方刚说的那句话或表情包是什么意思，针对他说的【具体事件】去吐槽、拆台或接梗（比如他聊打游戏你就损他菜，他聊吃饭你就损他猪，他问几点你就边回时间边骂他催命），绝对禁止不管对方说啥都无脑回一句毫无关系的“关你屁事/你有病吧”！
-2. 【口吻要求】像真人损友随手打字（3~16字），可自然带口头禅或糙话（如：卧槽、不是哥们、傻逼吧、滚犊子、神金、服了、牛逼、笑死爹了、纯纯大傻春），搭配表情码：[狗头]、[裂开]、[白眼]、[泣不成声]、[捂脸]`
+      prompt: `对方是你的铁哥们/死党好友。请严格遵守【情绪对等原则（人不犯我，我不犯人）】：
+1. 【平时正常交流】：当对方好好说话、问正事、聊日常或正常分享时，你也必须像正常好哥们一样自然、随性、友好地正面回复，【严禁为了攻击而攻击、严禁无缘无故骂人】！
+2. 【对方轻微嘴贫/开玩笑】：当对方跟你贫嘴调侃时，用幽默风趣的玩笑话自然接梗，可带 [狗头]、[捂脸]、[泣不成声]。
+3. 【仅当对方言语带攻击性时反击】：只有当对方先骂人、爆粗口、阴阳怪气挑衅你时，才立刻解除文明限制，用低素质损友粗口（如：不是哥们、你有病吧、臭傻逼、滚犊子、神金、狗叫什么、纯纯大傻春）结合他说的事狠狠怼回去！`
     },
     {
       id: "sweet",
@@ -566,7 +566,7 @@
           if (!saved.personaGroups || !Array.isArray(saved.personaGroups) || saved.personaGroups.length === 0) {
             currentConfig.personaGroups = JSON.parse(JSON.stringify(DEFAULT_PERSONA_GROUPS));
           } else {
-            // 自动将旧版容易引发答非所问的默认模板平滑升级为 v1.9 强语境真人接话模板（完全保留用户填好的好友名单）
+            // 自动将旧版容易引发无故攻击或答非所问的默认模板平滑升级为 v2.0 情绪对等自适应模板（完全保留用户填好的好友名单）
             currentConfig.personaGroups.forEach(g => {
               const newTpl = DEFAULT_PERSONA_GROUPS.find(d => d.id === g.id);
               if (
@@ -575,7 +575,8 @@
                   g.prompt.includes("回复原则：\n1. 极度熟稔接地气") ||
                   g.prompt.includes("回复原则：\n1. 极简口语化") ||
                   g.prompt.includes("对方发啥你都可以阴阳怪气") ||
-                  g.prompt.includes("每次回复必须换不同的切入点"))
+                  g.prompt.includes("每次回复必须换不同的切入点") ||
+                  g.prompt.includes("对方是你的十年铁哥们/死党损友"))
               ) {
                 g.prompt = newTpl.prompt;
               }
@@ -590,7 +591,7 @@
 
         renderPersonaTabsAndCard(false);
         updateStatus(currentConfig.enabled);
-        log("抖音火花助手 AI 已就绪 (v1.8.0 旗舰流光版)", "info");
+        log("抖音火花助手 AI 已就绪 (v2.0.0 情绪对等自适应版)", "info");
         configChangeCallbacks.forEach(cb => cb(currentConfig));
       });
     } catch (err) {
