@@ -85,17 +85,167 @@
       window.DySparkUI.shareCurrentVideoToBro = shareCurrentVideoToBro;
     }
 
-    setInterval(mainLoop, CHECK_INTERVAL);
+    loadPersistedStyleData();
+    installDomWakeObserver();
+    scheduleTick(800);
     sparkCheckTimer = setInterval(checkDailySpark, 60 * 1000);
   }
 
-  function recordBotReply(text) {
+  // ==========================================================================
+  // ⚙️ 串行调度器：同一时刻只跑一个任务，上一个回复没结束绝不开始下一个（根治高频多人聊天死机）
+  // ==========================================================================
+  const IDLE_INTERVAL = 1500;
+  const JOB_HARD_TIMEOUT = 40000;
+  let tickTimer = null;
+  let tickRunning = false;
+  let wakeRequested = false;
+  let nextTickDueAt = 0;
+  let lastRedDotScanAt = 0;
+  const friendLastServedAt = new Map();
+
+  function scheduleTick(delay) {
+    clearTimeout(tickTimer);
+    nextTickDueAt = Date.now() + delay;
+    tickTimer = setTimeout(runTick, delay);
+  }
+
+  function requestSoonTick() {
+    if (tickRunning) {
+      wakeRequested = true;
+      return;
+    }
+    if (nextTickDueAt - Date.now() > 350) {
+      scheduleTick(300);
+    }
+  }
+
+  function installDomWakeObserver() {
+    let pending = false;
+    const observer = new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      setTimeout(() => {
+        pending = false;
+        requestSoonTick();
+      }, 250);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function withHardTimeout(promise, ms, label) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}超时(${ms / 1000}s)，已自动放弃`)), ms))
+    ]);
+  }
+
+  async function runTick() {
+    if (tickRunning) {
+      wakeRequested = true;
+      return;
+    }
+    tickRunning = true;
+    let nextDelay = IDLE_INTERVAL;
+    try {
+      nextDelay = await withHardTimeout(mainLoop(), JOB_HARD_TIMEOUT, "本轮任务");
+    } catch (e) {
+      if (window.DySparkUI) window.DySparkUI.log(`⚠ ${e.message}`, "warn");
+      setProcessingLock(false);
+      nextDelay = 800;
+    } finally {
+      tickRunning = false;
+      if (wakeRequested) {
+        wakeRequested = false;
+        nextDelay = Math.min(nextDelay || IDLE_INTERVAL, 200);
+      }
+      scheduleTick(typeof nextDelay === "number" ? nextDelay : IDLE_INTERVAL);
+    }
+  }
+
+  // ==========================================================================
+  // 🧬 风格学习：区分“AI 发的”和“你本人亲手打的”消息，用你本人的真实说话样本去校准 AI 口吻
+  // ==========================================================================
+  const STYLE_STORE_KEY = "dy_spark_style_data";
+  let botSentTexts = new Set();
+  let ownStyleSamples = [];
+  const recentBotRepliesByFriend = new Map();
+  let styleSaveTimer = null;
+
+  function loadPersistedStyleData() {
+    try {
+      chrome.storage.local.get([STYLE_STORE_KEY], (res) => {
+        const data = (res && res[STYLE_STORE_KEY]) || {};
+        botSentTexts = new Set(Array.isArray(data.botSent) ? data.botSent : []);
+        ownStyleSamples = Array.isArray(data.ownSamples) ? data.ownSamples : [];
+      });
+    } catch (e) {}
+  }
+
+  function persistStyleDataSoon() {
+    clearTimeout(styleSaveTimer);
+    styleSaveTimer = setTimeout(() => {
+      try {
+        chrome.storage.local.set({
+          [STYLE_STORE_KEY]: {
+            botSent: Array.from(botSentTexts).slice(-400),
+            ownSamples: ownStyleSamples.slice(-60)
+          }
+        });
+      } catch (e) {}
+    }, 1500);
+  }
+
+  function normalizeForCompare(t) {
+    return (t || "").replace(/\s+/g, "").trim();
+  }
+
+  function recordBotReply(text, friendName = "") {
     if (!text) return;
     const clean = text.replace(/[\r\n\t]/g, " ").trim();
-    if (clean) {
-      recentBotReplies.push(clean);
-      if (recentBotReplies.length > 12) recentBotReplies.shift();
+    if (!clean) return;
+    recentBotReplies.push(clean);
+    if (recentBotReplies.length > 12) recentBotReplies.shift();
+
+    if (friendName) {
+      const list = recentBotRepliesByFriend.get(friendName) || [];
+      list.push(clean);
+      if (list.length > 8) list.shift();
+      recentBotRepliesByFriend.set(friendName, list);
     }
+
+    botSentTexts.add(normalizeForCompare(clean));
+    persistStyleDataSoon();
+  }
+
+  /**
+   * 从当前聊天记录里收集“我方气泡但不是 AI 发的” -> 这就是你本人亲手打的字，作为风格样本
+   */
+  function harvestOwnStyleSamples(messages) {
+    let changed = false;
+    for (const m of messages) {
+      if (!m.isSelf || m.msgType !== "text") continue;
+      const t = (m.text || "").trim();
+      if (t.length < 2 || t.length > 40) continue;
+      if (/^\[/.test(t)) continue;
+      const key = normalizeForCompare(t);
+      if (botSentTexts.has(key)) continue;
+      if (ownStyleSamples.some((s) => normalizeForCompare(s) === key)) continue;
+      ownStyleSamples.push(t);
+      changed = true;
+    }
+    if (ownStyleSamples.length > 60) ownStyleSamples = ownStyleSamples.slice(-60);
+    if (changed) persistStyleDataSoon();
+  }
+
+  function pickStyleSamples(n = 12) {
+    if (ownStyleSamples.length <= n) return ownStyleSamples.slice();
+    const recent = ownStyleSamples.slice(-Math.ceil(n / 2));
+    const older = ownStyleSamples.slice(0, -Math.ceil(n / 2));
+    const randomOlder = [];
+    while (randomOlder.length < n - recent.length && older.length > 0) {
+      randomOlder.push(older.splice(Math.floor(Math.random() * older.length), 1)[0]);
+    }
+    return randomOlder.concat(recent);
   }
 
   function cleanFriendNameText(raw) {
@@ -143,46 +293,48 @@
   }
 
   /**
-   * 主循环（内置 10 秒看门狗自动防死锁，绝不宕机）
+   * 主调度（由串行调度器 await 调用，返回下一次检查的间隔毫秒）
+   * 公平轮转：刚回完一个好友后，如果列表里有别人在等，优先去回等得最久的人，避免某个人高频刷屏时其他人一直排不上
    */
   async function mainLoop() {
-    if (!window.DySparkUI) return;
+    if (!window.DySparkUI) return IDLE_INTERVAL;
     const config = window.DySparkUI.getConfig();
-    if (!config.enabled || !config.apiKey) return;
+    if (!config.enabled || !config.apiKey) return 2500;
 
-    // 【防宕机看门狗】：如果锁被占用超过 10 秒仍未释放，强制解锁恢复运行！
+    // 手动操作（测试发送/看片/评论）进行中，主循环让路；超过 45 秒视为卡住自动释放
     if (isProcessing) {
-      if (processingStartTime > 0 && Date.now() - processingStartTime > 10000) {
-        window.DySparkUI.log("⚡ 看门狗检测到会话锁超时，已自动重置恢复运行", "warn");
+      if (processingStartTime > 0 && Date.now() - processingStartTime > 45000) {
+        window.DySparkUI.log("⚡ 手动任务锁超时，已自动释放", "warn");
         setProcessingLock(false);
       } else {
-        return;
+        return 600;
       }
     }
 
-    if (Date.now() - lastSendTimestamp < 1400) return;
+    if (Date.now() - lastSendTimestamp < 700) return 500;
 
-    // 第一优先级：先检查并回复当前已打开的私信聊天窗口
-    const repliedCurrent = await checkCurrentChat(config);
-    if (repliedCurrent) {
-      return;
+    // 第一优先级：当前打开的聊天窗口有未回消息 -> 直接回
+    const result = await checkCurrentChat(config);
+    if (result === "replied") {
+      // 回完后若有别人在排队，下一轮立刻去切换（公平轮转）
+      return 250;
+    }
+    if (result === "busy") {
+      return 400;
     }
 
-    // 第二优先级：当前窗口没有未回消息时，再去点开列表里的其他未读红点
+    // 第二优先级：扫描未读红点并切换（节流：最多每 1.2 秒扫一次全列表，避免页面卡顿）
+    if (Date.now() - lastRedDotScanAt < 1200) return 600;
+    lastRedDotScanAt = Date.now();
+
     const switched = autoSwitchByRedDot(config);
     if (switched) {
-      setProcessingLock(true);
-      setTimeout(async () => {
-        try {
-          const triggered = await checkCurrentChat(config);
-          if (!triggered) {
-            setProcessingLock(false);
-          }
-        } catch (e) {
-          setProcessingLock(false);
-        }
-      }, 1000);
+      invalidateChatCache();
+      // 等抖音渲染新会话后再检查（下一轮 tick 会自然处理）
+      return 900;
     }
+
+    return IDLE_INTERVAL;
   }
 
   function isGroupInWhitelist(groupName, config) {
@@ -549,25 +701,35 @@
     const currentScroll = findChatScrollContainer(currentInput);
     const currentFriend = currentInput ? getCurrentFriendName(currentInput, currentScroll) : "";
 
+    const candidates = [];
     for (const item of unreadList) {
       if (item.isGroup && !isGroupInWhitelist(item.friendName, config)) {
         continue;
       }
-      if (currentFriend && currentFriend !== "当前好友" && item.friendName.includes(currentFriend)) {
-        return false;
+      if (currentFriend && currentFriend !== "当前好友" && (item.friendName === currentFriend || item.friendName.includes(currentFriend))) {
+        continue;
       }
-
-      const typeLabel = item.isGroup ? "白名单群聊" : "个人私聊";
-      lastSwitchedFriendName = item.friendName;
-      window.DySparkUI.log(`🔴 排队切换至${typeLabel} [${item.friendName}]...`, "info");
-
-      simulateRealClick(item.rowElement);
-      const firstChild = item.rowElement.firstElementChild;
-      if (firstChild) simulateRealClick(firstChild);
-      return true;
+      candidates.push(item);
     }
 
-    return false;
+    if (candidates.length === 0) return false;
+
+    // 公平调度（Fair Scheduling）：按上次服务时间排序，优先切给等得最久的好友，彻底防止多好友并发时一人独占或卡死
+    candidates.sort((a, b) => {
+      const ta = friendLastServedAt.get(a.friendName) || 0;
+      const tb = friendLastServedAt.get(b.friendName) || 0;
+      return ta - tb;
+    });
+
+    const item = candidates[0];
+    const typeLabel = item.isGroup ? "白名单群聊" : "个人私聊";
+    lastSwitchedFriendName = item.friendName;
+    window.DySparkUI.log(`🔴 轮转切换至${typeLabel} [${item.friendName}]...`, "info");
+
+    simulateRealClick(item.rowElement);
+    const firstChild = item.rowElement.firstElementChild;
+    if (firstChild) simulateRealClick(firstChild);
+    return true;
   }
 
   function tryReturnToListIfNeeded() {
@@ -704,11 +866,48 @@
     };
   }
 
+  function invalidateChatCache() {
+    lastSendTimestamp = Date.now();
+  }
+
   /**
-   * 视觉几何 + 全尺寸表情包/Emoji 感知消息解析引擎 (v1.9.0)
-   * 解决：
-   * 1. 看到小黄脸 Emoji (20~60px) 或动图表情包发呆的问题；
-   * 2. 消息过多时底部气泡溢出或相邻气泡被错误合并导致“罢工”的问题。
+   * 调用后台视觉模型解析图片/表情包/动图画面内容 (v2.1.0)
+   */
+  async function enrichMediaDescriptions(unreadIncoming, visionConfig) {
+    if (!visionConfig || !visionConfig.enabled || !visionConfig.apiKey) return;
+    for (const m of unreadIncoming) {
+      if ((m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && m.mediaSrc) {
+        // 如果已经通过 React Fiber 拿到了具体的官方贴纸含义，直接使用，无需消耗视觉 API
+        if (m.hasSpecificMeaning && m.text && !m.text.includes("发来一个抖音表情")) {
+          continue;
+        }
+        try {
+          const res = await sendMessageWithTimeout(
+            {
+              action: "DESCRIBE_MEDIA",
+              src: m.mediaSrc,
+              dataUrl: m.dataUrl || "",
+              cacheKey: m.mediaSrc.split("?")[0],
+              vision: visionConfig
+            },
+            10000
+          );
+          if (res && res.success && res.desc) {
+            const desc = res.desc.replace(/[\r\n\t]/g, " ").trim();
+            m.text = `[发来图片/表情包，画面内容: ${desc}]`;
+            m.hasSpecificMeaning = true;
+            m.isUnlabeledSticker = false;
+            if (window.DySparkUI) {
+              window.DySparkUI.log(`👁️ 视觉模型识别画面: "${desc}"`, "info");
+            }
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  /**
+   * 视觉几何 + 全尺寸表情包/Emoji/动图感知消息解析引擎 (v2.1.0)
    */
   function extractMessagesWithGeometry(container) {
     if (!container) return [];
@@ -740,7 +939,6 @@
       const textRect = range.getBoundingClientRect();
 
       if (textRect.width < 4 || textRect.height < 10) continue;
-      // 放宽上下边界容差，防止底部最新消息稍微超出滚动视口就被丢弃
       if (textRect.top < containerRect.top - 10 || textRect.bottom > containerRect.bottom + 90) continue;
 
       const posKey = `txt_${Math.round(textRect.top / 5)}_${rawText}`;
@@ -787,6 +985,14 @@
         ""
       ).trim();
 
+      const mediaSrc = media.currentSrc || media.src || media.getAttribute("src") || "";
+      let dataUrl = "";
+      if (media.tagName === "CANVAS") {
+        try {
+          dataUrl = media.toDataURL("image/jpeg", 0.85);
+        } catch (e) {}
+      }
+
       // 过滤掉无具体含义的通用占位词（如“动画表情”、“图片”、“表情”）
       const isGenericAlt = /^(表情|\[表情\]|动画表情|\[动画表情\]|图片|\[图片\]|sticker|emoji|image)$/i.test(rawAlt);
       const specificMeaning = isGenericAlt ? "" : rawAlt;
@@ -806,6 +1012,9 @@
           inlineEmoji: emojiLabel,
           hasSpecificMeaning: !!specificMeaning,
           isUnlabeledSticker: !specificMeaning,
+          mediaSrc: mediaSrc,
+          dataUrl: dataUrl,
+          mediaElement: media,
           msgType: "sticker",
           isSelf: ownership.isSelf,
           reason: ownership.reason,
@@ -833,7 +1042,7 @@
         mediaDesc = `[发来表情包，画面含义: ${specificMeaning}]`;
       } else {
         isUnlabeledSticker = true;
-        mediaDesc = `[发来一张自定义图片表情包]`;
+        mediaDesc = `[发来一张图片/表情包/动图]`;
       }
 
       const distLeft = Math.round(ownership.bubbleRect.left - containerRect.left);
@@ -844,6 +1053,9 @@
         text: mediaDesc,
         hasSpecificMeaning: !!specificMeaning,
         isUnlabeledSticker: isUnlabeledSticker,
+        mediaSrc: mediaSrc,
+        dataUrl: dataUrl,
+        mediaElement: media,
         msgType: msgType,
         isSelf: ownership.isSelf,
         reason: ownership.reason,
@@ -866,13 +1078,17 @@
 
       const bgImg = window.getComputedStyle(div).backgroundImage || "";
       if (bgImg && bgImg !== "none" && bgImg.includes("url(")) {
+        const bgMatch = bgImg.match(/url\(["']?(.*?)["']?\)/);
+        const bgUrl = bgMatch ? bgMatch[1] : "";
         const ownership = analyzeMessageOwnership(div, container, containerRect, containerMidX);
         const alreadyHasRow = rawItems.some(it => it.element === ownership.rowElement);
         if (!alreadyHasRow) {
           rawItems.push({
             element: ownership.rowElement || div,
-            text: "[发来一张自定义图片表情包]",
+            text: "[发来一张动态表情包]",
             isUnlabeledSticker: true,
+            mediaSrc: bgUrl,
+            mediaElement: div,
             msgType: "sticker",
             isSelf: ownership.isSelf,
             reason: ownership.reason,
@@ -905,6 +1121,8 @@
             prev.text = `${prev.text} ${item.text}`;
           }
         }
+        if (!prev.mediaSrc && item.mediaSrc) prev.mediaSrc = item.mediaSrc;
+        if (!prev.dataUrl && item.dataUrl) prev.dataUrl = item.dataUrl;
         prev.bottom = Math.max(prev.bottom, item.bottom);
       } else {
         merged.push({ ...item });
@@ -941,50 +1159,40 @@
   }
 
   /**
-   * 构建高拟真、情绪对等自适应的对话 Payload (v2.0.0)
-   * 核心突破：
-   * 1. 【情绪对等镜像】：对方没嘴贫/没骂人时，100% 正常友好回复；仅当对方言语带攻击性时，才激活低素质互怼反击！
-   * 2. 【防表情包乱回复】：对于看不到画面的自定义图片表情包，严禁瞎猜画面内容或无故攻击，改为顺着上一句话题接话或回百搭表情。
+   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.1.0)
    */
-  function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null) {
-    const recentSelfSent = recentBotReplies.slice(-6);
-    const antiRepeatRule = recentSelfSent.length > 0
-      ? `\n【防复读禁令】你最近几句已经发过：[${recentSelfSent.join(" / ")}]。本次绝对禁止重复上面用过的词句或句式！`
+  function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null, friendName = "") {
+    const friendReplies = recentBotRepliesByFriend.get(friendName) || recentBotReplies.slice(-5);
+    const antiRepeatRule = friendReplies.length > 0
+      ? `\n你刚跟对方说过：[${friendReplies.slice(-4).join(" / ")}]，本次禁止复读上面说过的词句或相同句式。`
       : "";
 
-    const randomSeed = REPLY_VARIATION_SEEDS[Math.floor(Math.random() * REPLY_VARIATION_SEEDS.length)];
+    const userSamples = pickStyleSamples(6);
+    const styleSection = userSamples.length > 0
+      ? `\n你平时的真实打字口吻参考（短、随性、接地气）：[${userSamples.join(" / ")}]`
+      : "";
 
     let memorySection = "";
     if (memoryContext) {
       if (memoryContext.manualNotes) {
-        memorySection += `\n【该好友专属档案备注】\n${memoryContext.manualNotes}`;
+        memorySection += `\n【该好友备注】${memoryContext.manualNotes}`;
       }
       if (Array.isArray(memoryContext.memories) && memoryContext.memories.length > 0) {
-        const memLines = memoryContext.memories.map(
-          m => `- [权重${m.effectiveWeight || m.weight}] ${m.fact}`
-        );
-        memorySection += `\n【你们近7天的相关共同记忆 (仅在话题自然契合时顺嘴带出，不要生硬背诵)】\n${memLines.join("\n")}`;
+        const memLines = memoryContext.memories.map(m => m.fact);
+        memorySection += `\n【你们近期的共同经历/记忆(自然融入，别生硬背诵)】${memLines.join("；")}`;
       }
     }
 
     const incomingTone = analyzeIncomingTone(unreadIncomingList);
     const isRoughPersona = persona.groupId === "bro" || /脏话|损友|死党|互怼|互骂|粗口|傻逼|卧槽|滚/.test(persona.prompt);
 
-    // 根据【对方本轮的真实语气】动态切换回复策略（彻底解决“为了攻击而攻击”）
-    let toneRuleSection = "";
+    let tonePrompt = "";
     if (incomingTone === "AGGRESSIVE" && isRoughPersona) {
-      toneRuleSection = `【⚡ 当前对方语气判定：言语带攻击性/挑衅 -> 触发低素质互怼反击模式！】
-1. 对方这句话先对你嘴臭、骂人或挑衅了！请立即解除文明限制，针对他刚说的具体事情，用死党间狠辣接地气的粗口（如：不是哥们、你有病吧、臭傻逼、滚犊子、纯纯大傻春、狗叫什么、神金、菜就多练）直接怼回去！
-2. 怼人也必须紧扣他说的话题（比如他骂你菜你就损他战绩，他骂你有病你就损他精神状态），单句 4~16 字，搭配 [白眼] [裂开] [狗头] [泣不成声]。`;
+      tonePrompt = `【当前情境】对方先骂人或嘴臭挑衅了。针对他说的具体事情，用损友互损的糙话或粗口直接怼回去，损在点子上。单句短促（4~16字），可带[白眼][裂开][狗头]。`;
     } else if (incomingTone === "PLAYFUL") {
-      toneRuleSection = `【😄 当前对方语气判定：朋友调侃/轻微嘴贫/发表情 -> 启用幽默接梗模式】
-1. 对方并没有恶意骂人，只是在跟你开玩笑、贫嘴或发表情互动。
-2. 请用轻松好玩、幽默风趣的好朋友语气自然接话或回敬表情（如 [狗头] [捂脸] [泣不成声] [吃瓜]），【本次禁止使用低俗脏话骂人，禁止为了攻击而攻击】！`;
+      tonePrompt = `【当前情境】对方在开玩笑、贫嘴或发表情互动。像好朋友一样轻松幽默地接梗或调侃，不用动真格骂脏话，4~16字，带[狗头][捂脸][泣不成声]等。`;
     } else {
-      toneRuleSection = `【🌿 当前对方语气判定：正常好好说话 -> 强制启用和平正常回复模式！】
-1. 【最高铁律】对方这句话是在跟你正常交流/问问题/聊日常，完全没有嘴贫，也没有攻击你！
-2. 你必须 100% 像一个正常、靠谱、自然的好朋友一样，认真听懂并正面回复他说的具体事情！
-3. 【绝对禁止】本次严禁说任何脏话、严禁损人、严禁阴阳怪气、严禁为了攻击而攻击！像正常人发微信一样随性自然（4~18字），不加句号“。”。`;
+      tonePrompt = `【当前情境】对方在正常交流/问问题/聊日常，没有攻击你。像真实好朋友一样自然、靠谱地正面回答，绝对禁止无故骂人或攻击，随性口语（4~18字），不加句号。`;
     }
 
     // 提取当前未读消息之前的最近 10 条真实历史记录
@@ -992,40 +1200,30 @@
     const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 10), historyEndIdx);
     const lastHistoryTopic = historySlice.length > 0 ? historySlice[historySlice.length - 1].text : "";
 
-    // 整理对方本次未读消息的核心语义
     const rawTexts = unreadIncomingList.map(m => m.text);
     const allAreStickers = unreadIncomingList.every(m => m.msgType === "sticker");
     const hasUnlabeledSticker = unreadIncomingList.some(m => m.isUnlabeledSticker);
+    const hasSpecificMeaningSticker = unreadIncomingList.some(m => m.hasSpecificMeaning);
     const allAreVideos = unreadIncomingList.every(m => m.msgType === "video");
 
-    let latestTopicSummary = rawTexts.join("，");
-    let incomingInstruction = "";
-
-    if (allAreStickers) {
+    let mediaInstruction = "";
+    if (hasSpecificMeaningSticker) {
+      const meanings = unreadIncomingList.filter(m => m.hasSpecificMeaning).map(m => m.text);
+      mediaInstruction = `\n对方发来了表情包/图片：${meanings.join(" ")}。请结合画面里的具体内容或文字接梗、吐槽或回应，像真人看到朋友发这图时的即时反应！`;
+    } else if (allAreStickers) {
       if (hasUnlabeledSticker) {
-        // 针对看不到具体画面的自定义图片表情包：严禁瞎猜画面导致乱回复！
-        incomingInstruction = lastHistoryTopic
-          ? `【表情包防乱回指令】对方刚发了一张自定义图片表情包（你看不到图里的具体画面）。【严禁瞎猜表情包里画了什么！严禁无故骂表情包！】请直接顺着你们上一句聊的话题（“${lastHistoryTopic}”）自然接一句话，或者直接回一个百搭反应（如：“哈哈哈哈[泣不成声]”、“？[狗头]”、“服了你了[捂脸]”、“斗图是吧[狗头]”）。`
-          : `【表情包防乱回指令】对方单发了一张自定义图片表情包（你看不到图里的具体画面）。【严禁瞎编表情包画面内容！严禁无缘无故攻击骂人！】请直接用真实人类收到朋友表情包时的百搭自然短句回应（例如：“？一上来就发表情包[狗头]”、“哈哈哈哈啥意思[捂脸]”、“[狗头][狗头]”、“有事说事别光发表情包啊[吃瓜]”），控制在 2~12 字！`;
-      } else {
-        // 已知具体含义的表情（如 [狗头]、[捂脸]、[大哭]）
-        incomingInstruction = `【当前情境】对方发来了表情：${rawTexts.join(" ")}。请结合表情的含义与刚才聊的话题，自然回敬一个表情或简短接话（2~12字），不要无故骂人！`;
+        mediaInstruction = lastHistoryTopic
+          ? `\n对方发了一张自定义图片表情包（看不到画面）。顺着刚才聊的（“${lastHistoryTopic}”）自然接一句，或者随手回个表情（如“笑死我了[泣不成声]”、“服了[捂脸]”、“斗图是吧[狗头]”），严禁乱猜画面！`
+          : `\n对方单发了一张表情包。随手回个表情或问一句（如“？[狗头]”、“发这啥意思[捂脸]”、“[狗头][狗头]”），控制在 2~12 字，严禁瞎猜图里画了什么！`;
       }
     } else if (allAreVideos) {
-      incomingInstruction = `【当前情境】对方给你分享了抖音视频：${rawTexts.join(" ")}。请结合视频标题内容，用正常朋友口吻简短接话或讨论（4~16字）！`;
-    } else if (unreadIncomingList.length >= 4) {
-      incomingInstruction = `【当前情境】对方连续发了 ${unreadIncomingList.length} 条消息：“${rawTexts.join(" / ")}”。请把它们合起来理解，直接正面回应他最核心的问题或话题！`;
-    } else if (unreadIncomingList.length > 1) {
-      incomingInstruction = `【当前情境】对方分 ${unreadIncomingList.length} 句说了一件事：“${rawTexts.join("，")}”。请把这几句连起来理解完整意思，直接针对他说的核心内容自然回复！`;
-    } else {
-      incomingInstruction = `【当前必须正面回应的对方原话】：“${latestTopicSummary}”\n👉 请务必针对这句话的具体内容接话，对方正常说话你就正常回答，严禁答非所问，严禁无故攻击！`;
+      mediaInstruction = `\n对方分享了抖音视频：${rawTexts.join(" ")}。针对视频内容随口接话或吐槽，4~16字。`;
     }
 
-    const enhancedSystemPrompt = `[系统角色设定：真实人类抖音私信聊天，请完全遵循下方情绪对等指令与好友自然对话]
+    const enhancedSystemPrompt = `你是这个抖音号的号主本人，正拿着手机跟朋友私聊。
 ${persona.prompt}
-${toneRuleSection}${memorySection}
-${randomSeed}${antiRepeatRule}
-${incomingInstruction}`;
+${tonePrompt}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
+【硬性要求】短句（几个字到十来字），随性自然，完全像手机打字，严禁句号“。”，严禁任何AI助理式客套与解释，只输出你要发送的那句话。`;
 
     const payload = [{ role: "system", content: enhancedSystemPrompt }];
 
@@ -1053,8 +1251,8 @@ ${incomingInstruction}`;
   /**
    * 模拟打字并发送私信消息
    */
-  async function sendMessageToChat(text) {
-    recordBotReply(text);
+  async function sendMessageToChat(text, friendName = "") {
+    recordBotReply(text, friendName);
     lastSendTimestamp = Date.now();
 
     const inputEl = findChatInput();
@@ -1149,7 +1347,7 @@ ${incomingInstruction}`;
   }
 
   /**
-   * 检测当前私信聊天并回复（带自动滚底、连发防抖聚合、中途插队捕获与超时防死锁）
+   * 检测当前私信聊天并回复（带视觉解析、风格自适应、公平轮转、防并发死锁）
    */
   async function checkCurrentChat(config) {
     const inputEl = findChatInput();
@@ -1158,7 +1356,7 @@ ${incomingInstruction}`;
     const scrollContainer = findChatScrollContainer(inputEl);
     if (!scrollContainer) return false;
 
-    // 每次检查前确保聊天滚动条拉到底部，防止消息太多溢出可视区而漏看罢工
+    // 确保聊天滚动条拉到底部，防止消息过多溢出可视区
     ensureChatScrolledToBottom(scrollContainer);
 
     const friendName = getCurrentFriendName(inputEl, scrollContainer);
@@ -1171,6 +1369,9 @@ ${incomingInstruction}`;
     let messages = extractMessagesWithGeometry(scrollContainer);
     if (!messages || messages.length === 0) return false;
 
+    // 收集用户亲手打的文本作为风格学习语料
+    harvestOwnStyleSamples(messages);
+
     let unreadIncoming = collectUnreadIncomingMessages(messages);
     if (unreadIncoming.length === 0) {
       return false;
@@ -1178,8 +1379,8 @@ ${incomingInstruction}`;
 
     setProcessingLock(true);
 
-    // 【450ms 连发聚合缓冲】：如果对方正在连续打字发第2、第3句，稍等 450ms 再重抓一次把连发消息一次性打包！
-    await new Promise(r => setTimeout(r, 450));
+    // 400ms 连发聚合缓冲：对方正在分段发第2、第3句时一次性打包
+    await new Promise(r => setTimeout(r, 400));
     ensureChatScrolledToBottom(scrollContainer);
     const refreshedMessages = extractMessagesWithGeometry(scrollContainer);
     const refreshedUnread = collectUnreadIncomingMessages(refreshedMessages);
@@ -1188,7 +1389,10 @@ ${incomingInstruction}`;
       unreadIncoming = refreshedUnread;
     }
 
-    // 记录发起请求前已存在的对方消息节点快照（用于识别思考期间对方新插队发来的消息）
+    // 视觉模型增强：如果收到图片/表情包/动图，尝试调用视觉模型识别具体画面
+    const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
+    await enrichMediaDescriptions(unreadIncoming, visionConfig);
+
     const preFlightFriendElements = new Set(
       messages.filter(m => !m.isSelf).map(m => m.element)
     );
@@ -1214,7 +1418,7 @@ ${incomingInstruction}`;
     window.DySparkUI.log(`🎭 人格【${persona.groupName}】| 策略【${toneLabel}】思考中...`, "info");
 
     try {
-      // 【1.2秒极速超时检索记忆】：绝不因为记忆服务慢而卡死聊天回复！
+      // 1.2秒极速超时检索记忆
       const memRes = await sendMessageWithTimeout(
         {
           action: "GET_MEMORY_CONTEXT",
@@ -1230,7 +1434,7 @@ ${incomingInstruction}`;
         window.DySparkUI.log(`🧠 已带入 ${memoryContext.memories.length} 条7天动态记忆`, "info");
       }
 
-      const payload = buildHumanizedPayload(persona, messages, unreadIncoming, memoryContext);
+      const payload = buildHumanizedPayload(persona, messages, unreadIncoming, memoryContext, friendName);
 
       // 调用 DeepSeek（带 12 秒超时保护）
       const res = await sendMessageWithTimeout(
@@ -1242,11 +1446,10 @@ ${incomingInstruction}`;
         const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
         window.DySparkUI.log(`DeepSeek 回复: "${cleanReply}"`, "success");
 
-        await sendMessageToChat(cleanReply);
-        // 只有真正发送成功后，才把这批对方消息标记为“已回复”（绑定节点+文本签名双重校验）
+        await sendMessageToChat(cleanReply, friendName);
         unreadIncoming.forEach(m => markMessageReplied(m));
 
-        // 检查在 AI 思考这 1~2 秒期间，对方是否又新发了插队消息：若有，打上 MidFlight 标记以便下一轮立刻接上！
+        // 检查 AI 思考期间对方是否又新发了插队消息
         ensureChatScrolledToBottom(scrollContainer);
         const afterSendMessages = extractMessagesWithGeometry(scrollContainer);
         for (const m of afterSendMessages) {
@@ -1259,6 +1462,9 @@ ${incomingInstruction}`;
 
         window.DySparkUI.log(`✔ 已回复 [${friendName}]！`, "success");
 
+        // 记录该好友服务时间戳（公平轮转调度依据）
+        friendLastServedAt.set(friendName, Date.now());
+
         chrome.runtime.sendMessage({
           action: "AFTER_REPLY_ORGANIZE",
           apiKey: config.apiKey,
@@ -1268,20 +1474,18 @@ ${incomingInstruction}`;
           botReply: cleanReply
         });
 
-        setTimeout(() => {
-          tryReturnToListIfNeeded();
-          setProcessingLock(false);
-        }, 1100);
-        return true;
+        setProcessingLock(false);
+        tryReturnToListIfNeeded();
+        return "replied";
       } else {
         window.DySparkUI.log(`回复失败(稍后将自动重试): ${res ? res.error : "无响应"}`, "error");
         setProcessingLock(false);
-        return false;
+        return "failed";
       }
     } catch (e) {
       window.DySparkUI.log(`异常(稍后将自动重试): ${e.message}`, "error");
       setProcessingLock(false);
-      return false;
+      return "failed";
     }
   }
 
@@ -1313,7 +1517,9 @@ ${incomingInstruction}`;
       : { groupId: "default", groupName: "默认通用", prompt: config.prompt };
 
     window.DySparkUI.log(`[测试发送] 好友[${friendName}] 启用人格【${persona.groupName}】...`, "info");
-    const payload = buildHumanizedPayload(persona, messages, [lastMsg]);
+    const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
+    await enrichMediaDescriptions([lastMsg], visionConfig);
+    const payload = buildHumanizedPayload(persona, messages, [lastMsg], null, friendName);
 
     const res = await sendMessageWithTimeout(
       { action: "CALL_DEEPSEEK", apiKey: config.apiKey, messages: payload },
@@ -1323,9 +1529,10 @@ ${incomingInstruction}`;
     if (res && res.success && res.reply) {
       const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
       markMessageReplied(lastMsg);
+      friendLastServedAt.set(friendName, Date.now());
       window.DySparkUI.log(`DeepSeek 生成: "${cleanReply}"`, "success");
       try {
-        await sendMessageToChat(cleanReply);
+        await sendMessageToChat(cleanReply, friendName);
         window.DySparkUI.log("✔ 发送成功！", "success");
       } catch (err) {
         window.DySparkUI.log(`❌ 发送失败: ${err.message}`, "error");
@@ -1337,7 +1544,7 @@ ${incomingInstruction}`;
 
   function runDiagnose() {
     const config = window.DySparkUI ? window.DySparkUI.getConfig() : {};
-    window.DySparkUI.log("===== 开始全面诊断 (v1.9.0) =====", "info");
+    window.DySparkUI.log("===== 开始全面诊断 (v2.1.0) =====", "info");
 
     const unread = findUnreadRedDots();
     if (unread.length > 0) {

@@ -34,7 +34,233 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
+
+  // 【视觉】识别图片 / 表情包 / 动图（多帧拼接）
+  if (request.action === "DESCRIBE_MEDIA") {
+    describeMedia(request)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ success: false, error: err.message || "识图异常" }));
+    return true;
+  }
 });
+
+// ============================================================================
+// 👁️ 视觉识别模块：抓取图片 -> 动图抽取关键帧拼接 -> 压缩 -> 调用 OpenAI 兼容视觉模型 -> 缓存
+// ============================================================================
+const visionMemCache = new Map();
+const VISION_CACHE_KEY = "dy_vision_cache";
+const VISION_CACHE_MAX = 300;
+
+function hashString(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i += Math.max(1, Math.floor(str.length / 4000))) {
+    h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  }
+  return "h" + (h >>> 0).toString(36) + "_" + str.length;
+}
+
+function mediaCacheKey(src, dataUrl, cacheKey) {
+  if (cacheKey) return cacheKey;
+  if (src) return src.split("?")[0];
+  if (dataUrl) return hashString(dataUrl);
+  return "";
+}
+
+async function readVisionCache(key) {
+  if (!key) return "";
+  if (visionMemCache.has(key)) return visionMemCache.get(key);
+  return new Promise((resolve) => {
+    chrome.storage.local.get([VISION_CACHE_KEY], (res) => {
+      const store = (res && res[VISION_CACHE_KEY]) || {};
+      const hit = store[key] ? store[key].d : "";
+      if (hit) visionMemCache.set(key, hit);
+      resolve(hit || "");
+    });
+  });
+}
+
+async function writeVisionCache(key, desc) {
+  if (!key || !desc) return;
+  visionMemCache.set(key, desc);
+  chrome.storage.local.get([VISION_CACHE_KEY], (res) => {
+    const store = (res && res[VISION_CACHE_KEY]) || {};
+    store[key] = { d: desc, t: Date.now() };
+    const keys = Object.keys(store);
+    if (keys.length > VISION_CACHE_MAX) {
+      keys.sort((a, b) => store[a].t - store[b].t);
+      keys.slice(0, keys.length - VISION_CACHE_MAX).forEach((k) => delete store[k]);
+    }
+    chrome.storage.local.set({ [VISION_CACHE_KEY]: store });
+  });
+}
+
+function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * 把任意图片 Blob（JPG/PNG/WebP/GIF/动图 WebP）转成适合视觉模型的 JPEG：
+ * 动图会抽取 首帧/中间帧/末帧 横向拼接，让模型看懂动作变化
+ */
+async function prepareImageFromBlob(blob) {
+  const type = (blob.type || "").toLowerCase();
+  const frames = [];
+
+  if (typeof ImageDecoder !== "undefined" && /gif|webp|png|apng/.test(type)) {
+    try {
+      const decoder = new ImageDecoder({ data: await blob.arrayBuffer(), type });
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      const count = track ? track.frameCount : 1;
+      const idxs = count >= 3 ? [0, Math.floor(count / 2), count - 1] : count === 2 ? [0, 1] : [0];
+      for (const i of idxs) {
+        const { image } = await decoder.decode({ frameIndex: i });
+        frames.push(image);
+      }
+      decoder.close();
+    } catch (e) {
+      frames.length = 0;
+    }
+  }
+
+  if (frames.length === 0) {
+    frames.push(await createImageBitmap(blob));
+  }
+
+  const dims = frames.map((f) => ({
+    w: f.displayWidth || f.width || 1,
+    h: f.displayHeight || f.height || 1
+  }));
+
+  const isAnimated = frames.length > 1;
+  const targetH = isAnimated ? 256 : Math.min(512, dims[0].h);
+  const scaled = dims.map((d) => {
+    let h = targetH;
+    let w = Math.round((d.w / d.h) * h);
+    if (!isAnimated && w > 512) {
+      w = 512;
+      h = Math.round((d.h / d.w) * w);
+    }
+    return { w: Math.max(1, w), h: Math.max(1, h) };
+  });
+
+  const gap = isAnimated ? 6 : 0;
+  const totalW = scaled.reduce((s, d) => s + d.w, 0) + gap * (scaled.length - 1);
+  const totalH = Math.max(...scaled.map((d) => d.h));
+
+  const canvas = new OffscreenCanvas(totalW, totalH);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff"; // 透明表情包铺白底，避免转 JPEG 后变黑
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  let x = 0;
+  frames.forEach((f, i) => {
+    ctx.drawImage(f, x, 0, scaled[i].w, scaled[i].h);
+    x += scaled[i].w + gap;
+    try {
+      f.close();
+    } catch (e) {}
+  });
+
+  const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  const base64 = arrayBufferToBase64(await out.arrayBuffer());
+  return { base64, frameCount: frames.length };
+}
+
+async function describeMedia({ src, dataUrl, cacheKey, vision }) {
+  if (!vision || !vision.apiKey || !vision.baseUrl || !vision.model) {
+    return { success: false, error: "未配置视觉识别模型 Key" };
+  }
+
+  const key = mediaCacheKey(src, dataUrl, cacheKey);
+  const cached = await readVisionCache(key);
+  if (cached) return { success: true, desc: cached, cached: true };
+
+  let blob;
+  if (dataUrl) {
+    blob = await (await fetch(dataUrl)).blob();
+  } else if (src) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch(src, { credentials: "omit", signal: controller.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error(`图片下载失败 HTTP ${resp.status}`);
+    blob = await resp.blob();
+  } else {
+    return { success: false, error: "无图片来源" };
+  }
+
+  const { base64, frameCount } = await prepareImageFromBlob(blob);
+
+  // 智谱接口习惯传纯 base64，其它 OpenAI 兼容接口传 data URL
+  const isZhipu = /bigmodel\.cn/i.test(vision.baseUrl);
+  const imageUrl = isZhipu ? base64 : `data:image/jpeg;base64,${base64}`;
+
+  const framesHint = frameCount > 1
+    ? `这是一张动图按时间顺序截取的 ${frameCount} 帧，从左到右拼在一起。`
+    : "";
+
+  const prompt = `${framesHint}这是抖音私信里朋友发来的一张图（可能是表情包、动图、照片或截图）。
+用一句不超过40字的中文说清楚：是什么类型、画面里是什么、图上的文字（有就原样写出）、想表达的情绪或梗。
+只输出这一句描述，不要分点，不要多余解释。`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(vision.baseUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${vision.apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        model: vision.model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageUrl } }
+            ]
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 120
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      let msg = `视觉模型请求失败 HTTP ${resp.status}`;
+      try {
+        const j = JSON.parse(errText);
+        if (j.error && j.error.message) msg = j.error.message;
+      } catch (e) {}
+      return { success: false, error: msg };
+    }
+
+    const data = await resp.json();
+    const desc = data.choices && data.choices[0] && data.choices[0].message
+      ? String(data.choices[0].message.content || "").replace(/[\r\n]+/g, " ").trim()
+      : "";
+    if (!desc) return { success: false, error: "视觉模型未返回描述" };
+
+    await writeVisionCache(key, desc);
+    return { success: true, desc, frameCount };
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === "AbortError") return { success: false, error: "视觉模型超时" };
+    return { success: false, error: e.message };
+  }
+}
 
 /**
  * 计算 7 天半衰期有效权重 (浏览器本地兜底副本使用)
@@ -112,6 +338,8 @@ async function getMemoryContextForChat({ friend, queryText, apiKey }) {
  * 【03 / 回答后的整理】：筛选值得记的事 -> 写入或纠正 Basic Memory -> 同步关联 Markdown
  * 【EX / 失败与待处理】：若失败则写入 pending_sync.json，下次聊天自动重试
  */
+const organizeThrottle = new Map();
+
 async function organizeMemoryAfterReply({ apiKey, friend, personaName, userText, botReply, extraFact }) {
   // 如果有明确的事件事实（比如刚刚评论了死党的视频或分享了视频），直接写入无需大模型筛选
   if (extraFact) {
@@ -122,6 +350,13 @@ async function organizeMemoryAfterReply({ apiKey, friend, personaName, userText,
   if (!apiKey || !userText || userText.length < 3) {
     return { success: true, saved: [] };
   }
+
+  // 高频聊天时同一好友 40 秒内最多提炼一次，避免 API 请求翻倍拖慢回复
+  const lastAt = organizeThrottle.get(friend) || 0;
+  if (Date.now() - lastAt < 40000) {
+    return { success: true, saved: [], throttled: true };
+  }
+  organizeThrottle.set(friend, Date.now());
 
   // 忽略纯表情包或极短无信息量的语气词（省 Token 且防止垃圾记忆污染）
   if (/^(\[发来表情包|\[发来一个表情包|\?|？|1+|6+|哈哈+|哦|嗯|好)$/.test(userText.trim())) {
@@ -246,9 +481,9 @@ async function retryPendingQueue(queue, apiKey) {
 async function handleDeepSeekChat({
   apiKey,
   messages,
-  temperature = 0.85,
-  presence_penalty = 0.35,
-  frequency_penalty = 0.4
+  temperature = 0.9,
+  presence_penalty = 0.3,
+  frequency_penalty = 0.5
 }) {
   if (!apiKey || !apiKey.trim()) {
     return { success: false, error: "未配置 DeepSeek API Key" };

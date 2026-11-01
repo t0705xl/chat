@@ -285,6 +285,11 @@
   line-height: 1.45;
 }
 
+#dy-spark-root select option {
+  background: #161823;
+  color: #fff;
+}
+
 /* 开关行与现代滑动 Switch */
 .dy-spark-switch-row {
   display: flex;

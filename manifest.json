@@ -1,14 +1,24 @@
 {
   "manifest_version": 3,
   "name": "抖音火花助手 AI (DeepSeek 智能社交 Agent)",
-  "version": "2.0.0",
-  "description": "基于 JavaScript ES6+、Manifest V3 与 DeepSeek 大模型的抖音 Web 智能社交 Agent：支持全自动秒回续火花、情绪对等自适应人设、7天艾宾浩斯动态记忆库及多模态看片神评互动。",
+  "version": "2.1.0",
+  "description": "基于 JavaScript ES6+、Manifest V3 与 DeepSeek 大模型的抖音 Web 智能社交 Agent：支持全自动秒回续火花、多好友高并发调度、图片/表情包/动图视觉识别、情绪对等自适应人设与7天动态记忆库。",
   "permissions": [
     "storage"
   ],
   "host_permissions": [
     "https://api.deepseek.com/*",
+    "https://open.bigmodel.cn/*",
+    "https://dashscope.aliyuncs.com/*",
     "https://*.douyin.com/*",
+    "https://*.douyinpic.com/*",
+    "https://*.douyinstatic.com/*",
+    "https://*.douyincdn.com/*",
+    "https://*.byteimg.com/*",
+    "https://*.bytecdn.cn/*",
+    "https://*.pstatp.com/*",
+    "https://*.zjcdn.com/*",
+    "https://*.ibytedtos.com/*",
     "http://127.0.0.1:18991/*"
   ],
   "background": {

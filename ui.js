@@ -8,21 +8,17 @@
       name: "🌐 默认通用",
       isDefault: true,
       friends: "",
-      prompt: `你是账号主人本人，正在用手机刷抖音顺手跟朋友发私信。
-【第一原则：精准听懂人话，严禁答非所问】
-1. 必须先看清对方具体在聊什么事（问时间、聊游戏、吐槽日常、发表情包、分享视频等），顺着对方的话题逻辑自然接话、调侃或反问！
-2. 说话像20岁年轻人的真实微信/抖音聊天：极简短句（3~16字），不打句号“。”和波浪号“~”，绝不像客服汇报，也绝不说没有逻辑的胡话；
-3. 适度穿插抖音原生表情码（必须带方括号）：[捂脸]、[狗头]、[裂开]、[泣不成声]、[吃瓜]、[白眼]、[666]`
+      prompt: `你就是这个抖音号的主人，二十出头，正拿着手机跟朋友私聊。
+说话就是平时发消息的样子：短、随意、有自己的态度，会接话也会反问，偶尔分享一下自己在干嘛。
+表情不用每句都带，想带的时候再带一个。`
     },
     {
       id: "bro",
       name: "🔥 死党/损友",
       isDefault: false,
       friends: "",
-      prompt: `对方是你的铁哥们/死党好友。请严格遵守【情绪对等原则（人不犯我，我不犯人）】：
-1. 【平时正常交流】：当对方好好说话、问正事、聊日常或正常分享时，你也必须像正常好哥们一样自然、随性、友好地正面回复，【严禁为了攻击而攻击、严禁无缘无故骂人】！
-2. 【对方轻微嘴贫/开玩笑】：当对方跟你贫嘴调侃时，用幽默风趣的玩笑话自然接梗，可带 [狗头]、[捂脸]、[泣不成声]。
-3. 【仅当对方言语带攻击性时反击】：只有当对方先骂人、爆粗口、阴阳怪气挑衅你时，才立刻解除文明限制，用低素质损友粗口（如：不是哥们、你有病吧、臭傻逼、滚犊子、神金、狗叫什么、纯纯大傻春）结合他说的事狠狠怼回去！`
+      prompt: `对方是你认识很多年的铁哥们，你们说话很随便，平时互相开玩笑、互相拆台。
+他正常聊天你就正常接，该帮忙帮忙、该分享分享；他贫嘴你就贫回去；他先嘴臭你再损回去，但要损在点子上，别乱骂。`
     },
     {
       id: "sweet",
@@ -46,6 +42,24 @@
     }
   ];
 
+  const VISION_PRESETS = {
+    zhipu: {
+      label: "智谱 GLM-4V-Flash (免费)",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      model: "glm-4v-flash"
+    },
+    qwen: {
+      label: "通义千问 Qwen-VL",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      model: "qwen-vl-plus"
+    },
+    custom: {
+      label: "自定义 OpenAI 兼容接口",
+      baseUrl: "",
+      model: ""
+    }
+  };
+
   const DEFAULT_CONFIG = {
     apiKey: "",
     enabled: false,
@@ -54,7 +68,12 @@
     personaGroups: DEFAULT_PERSONA_GROUPS,
     activePersonaId: "default",
     sparkTime: "21:00",
-    sparkEnabled: true
+    sparkEnabled: true,
+    visionEnabled: true,
+    visionProvider: "zhipu",
+    visionApiKey: "",
+    visionBaseUrl: VISION_PRESETS.zhipu.baseUrl,
+    visionModel: VISION_PRESETS.zhipu.model
   };
 
   let currentConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
@@ -128,6 +147,30 @@
             </div>
           </div>
 
+          <!-- 视觉识别：图片 / 表情包 / 动图 -->
+          <div class="dy-spark-section">
+            <div class="dy-spark-switch-row">
+              <label class="dy-spark-label" style="font-weight: 600; color: #fff;">👁️ 图片/表情包/动图识别</label>
+              <label class="dy-spark-toggle-switch">
+                <input type="checkbox" id="dy-spark-vision-toggle" checked />
+                <span class="dy-spark-toggle-slider"></span>
+              </label>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <select id="dy-spark-vision-provider" class="dy-spark-input" style="flex: 1; padding: 5px 6px;">
+                <option value="zhipu">智谱 GLM-4V-Flash (免费)</option>
+                <option value="qwen">通义千问 Qwen-VL</option>
+                <option value="custom">自定义 OpenAI 兼容接口</option>
+              </select>
+              <button id="dy-spark-test-vision" class="dy-spark-btn" style="padding: 2px 8px; font-size: 11px;">测试</button>
+            </div>
+            <input type="password" id="dy-spark-vision-key" class="dy-spark-input" placeholder="视觉模型 API Key（DeepSeek 不支持看图，需单独填）" />
+            <div id="dy-spark-vision-custom-box" style="display: none; flex-direction: column; gap: 6px;">
+              <input type="text" id="dy-spark-vision-url" class="dy-spark-input" placeholder="接口地址 .../chat/completions" />
+              <input type="text" id="dy-spark-vision-model" class="dy-spark-input" placeholder="模型名，如 gpt-4o-mini" />
+            </div>
+          </div>
+
           <!-- 多维人格分组模块 -->
           <div class="dy-spark-section">
             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -193,7 +236,7 @@
 
         <div class="dy-spark-footer">
           <span>Powered by JavaScript ES6+ · Node.js · DeepSeek LLM</span>
-          <span>v1.9.0</span>
+          <span>v2.1.0</span>
         </div>
       </div>
     `;
@@ -551,6 +594,92 @@
         log("日志已清空", "info");
       });
     }
+
+    // 视觉识别配置
+    const visionToggle = document.getElementById("dy-spark-vision-toggle");
+    const visionProvider = document.getElementById("dy-spark-vision-provider");
+    const visionKey = document.getElementById("dy-spark-vision-key");
+    const visionUrl = document.getElementById("dy-spark-vision-url");
+    const visionModel = document.getElementById("dy-spark-vision-model");
+    const visionTestBtn = document.getElementById("dy-spark-test-vision");
+
+    const saveVisionFields = () => {
+      currentConfig.visionEnabled = visionToggle.checked;
+      currentConfig.visionProvider = visionProvider.value;
+      currentConfig.visionApiKey = visionKey.value.trim();
+      const preset = VISION_PRESETS[visionProvider.value] || VISION_PRESETS.custom;
+      if (visionProvider.value === "custom") {
+        currentConfig.visionBaseUrl = visionUrl.value.trim();
+        currentConfig.visionModel = visionModel.value.trim();
+      } else {
+        currentConfig.visionBaseUrl = preset.baseUrl;
+        currentConfig.visionModel = preset.model;
+      }
+      renderVisionCustomBox();
+      persistConfig();
+    };
+
+    visionToggle.addEventListener("change", saveVisionFields);
+    visionProvider.addEventListener("change", saveVisionFields);
+    visionKey.addEventListener("input", saveVisionFields);
+    visionUrl.addEventListener("input", saveVisionFields);
+    visionModel.addEventListener("input", saveVisionFields);
+
+    visionTestBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      if (!currentConfig.visionApiKey) {
+        log("请先填写视觉模型 API Key", "warn");
+        return;
+      }
+      visionTestBtn.disabled = true;
+      log("正在测试视觉模型（识别一张测试图）...", "info");
+      try {
+        const c = document.createElement("canvas");
+        c.width = 160;
+        c.height = 80;
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#ffe14d";
+        ctx.fillRect(0, 0, 160, 80);
+        ctx.fillStyle = "#222";
+        ctx.font = "bold 30px sans-serif";
+        ctx.fillText("测试OK", 22, 52);
+        const res = await sendToBackground(
+          {
+            action: "DESCRIBE_MEDIA",
+            dataUrl: c.toDataURL("image/png"),
+            cacheKey: "vision_test_" + Date.now(),
+            vision: getVisionConfig()
+          },
+          20000
+        );
+        if (res && res.success) {
+          log(`✔ 视觉模型可用，识别结果: ${res.desc}`, "success");
+        } else {
+          log(`❌ 视觉模型失败: ${res ? res.error : "无响应"}`, "error");
+        }
+      } catch (err) {
+        log(`❌ 视觉测试异常: ${err.message}`, "error");
+      } finally {
+        visionTestBtn.disabled = false;
+      }
+    });
+  }
+
+  function renderVisionCustomBox() {
+    const box = document.getElementById("dy-spark-vision-custom-box");
+    const provider = document.getElementById("dy-spark-vision-provider");
+    if (box && provider) {
+      box.style.display = provider.value === "custom" ? "flex" : "none";
+    }
+  }
+
+  function getVisionConfig() {
+    return {
+      enabled: currentConfig.visionEnabled !== false,
+      apiKey: currentConfig.visionApiKey || "",
+      baseUrl: currentConfig.visionBaseUrl || "",
+      model: currentConfig.visionModel || ""
+    };
   }
 
   function loadConfig() {
@@ -576,7 +705,9 @@
                   g.prompt.includes("回复原则：\n1. 极简口语化") ||
                   g.prompt.includes("对方发啥你都可以阴阳怪气") ||
                   g.prompt.includes("每次回复必须换不同的切入点") ||
-                  g.prompt.includes("对方是你的十年铁哥们/死党损友"))
+                  g.prompt.includes("对方是你的十年铁哥们/死党损友") ||
+                  g.prompt.includes("【第一原则：精准听懂人话") ||
+                  g.prompt.includes("【情绪对等原则（人不犯我，我不犯人）】"))
               ) {
                 g.prompt = newTpl.prompt;
               }
@@ -589,9 +720,19 @@
         document.getElementById("dy-spark-time").value = currentConfig.sparkTime;
         document.getElementById("dy-spark-spark-toggle").checked = currentConfig.sparkEnabled;
 
+        document.getElementById("dy-spark-vision-toggle").checked = currentConfig.visionEnabled !== false;
+        document.getElementById("dy-spark-vision-provider").value = currentConfig.visionProvider || "zhipu";
+        document.getElementById("dy-spark-vision-key").value = currentConfig.visionApiKey || "";
+        document.getElementById("dy-spark-vision-url").value = currentConfig.visionBaseUrl || "";
+        document.getElementById("dy-spark-vision-model").value = currentConfig.visionModel || "";
+        renderVisionCustomBox();
+
         renderPersonaTabsAndCard(false);
         updateStatus(currentConfig.enabled);
-        log("抖音火花助手 AI 已就绪 (v2.0.0 情绪对等自适应版)", "info");
+        log("抖音火花助手 AI 已就绪 (v2.1.0 并发调度+视觉识别版)", "info");
+        if (!currentConfig.visionApiKey) {
+          log("ℹ 未填视觉模型 Key：图片/表情包将无法识别画面内容", "warn");
+        }
         configChangeCallbacks.forEach(cb => cb(currentConfig));
       });
     } catch (err) {
@@ -641,6 +782,7 @@
 
   window.DySparkUI = {
     getConfig: () => currentConfig,
+    getVisionConfig: getVisionConfig,
     getPersonaForFriend: getPersonaForFriend,
     getPriorityBroInfo: getPriorityBroInfo,
     log: log,
