@@ -246,9 +246,9 @@ async function retryPendingQueue(queue, apiKey) {
 async function handleDeepSeekChat({
   apiKey,
   messages,
-  temperature = 1.2,
-  presence_penalty = 0.9,
-  frequency_penalty = 0.9
+  temperature = 0.85,
+  presence_penalty = 0.35,
+  frequency_penalty = 0.4
 }) {
   if (!apiKey || !apiKey.trim()) {
     return { success: false, error: "未配置 DeepSeek API Key" };
@@ -270,10 +270,10 @@ async function handleDeepSeekChat({
         model: "deepseek-chat",
         messages: messages,
         temperature: temperature,
-        top_p: 0.95,
+        top_p: 0.92,
         presence_penalty: presence_penalty,
         frequency_penalty: frequency_penalty,
-        max_tokens: 90
+        max_tokens: 100
       }),
       signal: controller.signal
     });

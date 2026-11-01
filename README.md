@@ -2,7 +2,7 @@
 
 # 🔥 抖音火花助手 AI (Douyin Spark AI Agent)
 
-**基于 DeepSeek-V3 大模型、浏览器原生 Manifest V3 与 7 天艾宾浩斯动态记忆库的抖音 Web 智能社交 Agent**
+**基于 DeepSeek 大模型、浏览器原生 Manifest V3 与 7 天艾宾浩斯动态记忆库的抖音 Web 智能社交 Agent**
 
 [![JavaScript](https://img.shields.io/badge/Language-JavaScript%20ES6%2B-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript)
 [![Node.js](https://img.shields.io/badge/Runtime-Node.js%20HTTP%20Bridge-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
@@ -19,7 +19,7 @@
 
 **抖音火花助手 AI (`v1.8.0`)** 是一款专为抖音网页版（`douyin.com`）打造的**纯前端浏览器扩展 + 本地轻量级记忆桥接系统**。它不仅能全天候全自动帮你与好友**秒回消息、每日定时续火花保活**，更颠覆了传统“死板客服式机器人”的痛点：
 
-通过独创的 **🎭 多维好友人格分组引擎**、**🧠 7 天艾宾浩斯动态增降权记忆库** 以及 **🎬 AI 多模态看片/神评/转发工作台**，让 AI 真正拥有“死党互怼、偏爱温柔、礼貌得体”的鲜活灵魂与长期共同记忆，甚至能陪你刷抖音、在好友视频评论区精准整活神评、把搞笑视频一键转发给铁哥们吐槽。
+通过**🎭 多维好友人格分组引擎**、**🧠 7 天艾宾浩斯动态增降权记忆库** 以及 **🎬 AI 多模态看片/神评/转发工作台**，让 AI 真正拥有“死党互怼、偏爱温柔、礼貌得体”的鲜活灵魂与长期共同记忆，甚至能陪你刷抖音、在好友视频评论区精准整活神评、把搞笑视频一键转发给铁哥们吐槽。
 
 ---
 
