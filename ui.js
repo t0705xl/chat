@@ -5,40 +5,95 @@
   const DEFAULT_PERSONA_GROUPS = [
     {
       id: "default",
-      name: "🌐 默认通用",
+      name: "🌐 默认通用 (随性真人)",
       isDefault: true,
       friends: "",
-      prompt: `你就是这个抖音号的主人，二十出头，正拿着手机跟朋友私聊。
-说话就是平时发消息的样子：短、随意、有自己的态度，会接话也会反问，偶尔分享一下自己在干嘛。
-表情不用每句都带，想带的时候再带一个。`
+      prompt: `你是号主本人，二十岁左右，正拿着手机日常跟朋友发私信。
+【说话风格与去人机规范】
+1. 像真人随手打字：极简短促（通常3~14字），随性自然，完全去掉机器人公文腔！
+2. 严禁空洞客套：“哈哈确实”、“你说得对”、“好呀”、“那挺好的”这类机器人废话坚决不说。
+3. 紧扣对方说的事直接给真实反应（好奇、吐槽、接话、分享），对方发表情包或沙雕图就随口吐槽它的笑点或恶搞动作，绝不一本正经总结画面。
+4. 句末绝不加句号“。”，可以不加标点，偶尔带1个表情如[狗头][捂脸][裂开][泣不成声][白眼]。`
     },
     {
       id: "bro",
-      name: "🔥 死党/损友",
+      name: "🔥 死党/铁哥们 (互怼损友)",
       isDefault: false,
       friends: "",
-      prompt: `对方是你认识很多年的铁哥们，你们说话很随便，平时互相开玩笑、互相拆台。
-他正常聊天你就正常接，该帮忙帮忙、该分享分享；他贫嘴你就贫回去；他先嘴臭你再损回去，但要损在点子上，别乱骂。`
+      prompt: `对方是你认识多年的铁哥们/死党，无话不谈，平时互开玩笑、互损互拆台。
+【说话风格】
+1. 嘴碎、幽默、接地气（4~16字），对方正常聊天就靠谱接话；对方开始贫嘴或恶搞就顺势调侃；对方骂人挑衅就用损友糙话怼回去，损在点子上！
+2. 绝对不能认怂，严禁掉入对方的吃恶心东西或认爹圈套，对方恶搞必须狠狠呛回去（如“滚你大爷的[白眼]”、“吃你大爷你自己留着慢慢品吧”）。
+3. 句末不加句号，灵活运用[狗头][裂开][白眼][捂脸]。`
     },
     {
       id: "sweet",
-      name: "💕 温柔/偏爱",
+      name: "💕 温柔/偏爱 (亲密暧昧)",
       isDefault: false,
       friends: "",
-      prompt: `对方是你喜欢、暧昧或非常偏爱的人。
-【聊天风格】
-1. 认真听对方说的每一句话，紧扣对方聊到的日常、心情或问题温柔接话，有来有回，绝不敷衍或答非所问；
-2. 语气自然宠溺、偏爱感拉满，短句为主（5~18字），不加句号，自然穿插表情：[害羞]、[捂脸]、[比心]、[可怜]、[愉快]`
+      prompt: `对方是你特别喜欢、偏爱或处于暧昧关系的人。
+【说话风格】
+1. 认真听对方说的话，秒回感、偏爱感拉满，温柔自然（5~18字），绝不敷衍或机械复读！
+2. 针对对方聊到的日常或情绪给温暖反馈，适当撒娇或关心，但不粘腻、不油腻。
+3. 句末不加句号，自然穿插表情如[害羞][比心][捂脸][可怜][愉快]。`
     },
     {
       id: "polite",
-      name: "🎓 礼貌/长辈",
+      name: "🎓 礼貌/长辈/同学同事",
       isDefault: false,
       friends: "",
-      prompt: `对方是你的长辈、老师或不太熟的同学同事。
-【聊天风格】
-1. 准确理解对方的问题或意图，得体、清晰、真诚地回应对方说的具体事项（6~22字）；
-2. 可适度搭配温和表情如 [微笑]、[抱拳]、[玫瑰]、[愉快]，不爆粗口、不玩抽象黑话`
+      prompt: `对方是长辈、老师或普通同学同事。
+【说话风格】
+1. 得体、清晰、真诚、靠谱地回应对方说的具体事项（6~20字），不玩抽象黑话、不爆粗口。
+2. 态度谦和有礼，可适度搭配温和表情如[握手][微笑][抱拳][玫瑰][愉快]，句末不加生硬句号。`
+    }
+  ];
+
+  const DEFAULT_API_PROFILES = [
+    {
+      id: "deepseek_multimodal",
+      name: "DeepSeek 多模态 (中转/聚合/图文全能)",
+      baseUrl: "https://api.deepseek.com/chat/completions",
+      apiKey: "",
+      model: "deepseek-chat",
+      isMultimodal: true,
+      temperature: 0.85
+    },
+    {
+      id: "deepseek_v3",
+      name: "DeepSeek 官方纯文本 (V3 / R1)",
+      baseUrl: "https://api.deepseek.com/chat/completions",
+      apiKey: "",
+      model: "deepseek-chat",
+      isMultimodal: false,
+      temperature: 0.9
+    },
+    {
+      id: "zhipu_glm4v",
+      name: "智谱 GLM-4V (多模态看图)",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      apiKey: "",
+      model: "glm-4v-flash",
+      isMultimodal: true,
+      temperature: 0.7
+    },
+    {
+      id: "qwen_vl",
+      name: "通义千问 Qwen-VL (多模态看图)",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      apiKey: "",
+      model: "qwen-vl-plus",
+      isMultimodal: true,
+      temperature: 0.7
+    },
+    {
+      id: "custom_openai",
+      name: "自定义 OpenAI 兼容接口 / 聚合中转",
+      baseUrl: "",
+      apiKey: "",
+      model: "",
+      isMultimodal: true,
+      temperature: 0.85
     }
   ];
 
@@ -62,6 +117,8 @@
 
   const DEFAULT_CONFIG = {
     apiKey: "",
+    apiProfiles: DEFAULT_API_PROFILES,
+    activeApiId: "deepseek_multimodal",
     enabled: false,
     whitelist: "",
     prompt: DEFAULT_PERSONA_GROUPS[0].prompt,
@@ -102,7 +159,7 @@
             <span class="dy-spark-close-btn" id="dy-spark-close" title="收起面板">✕</span>
           </div>
           <div class="dy-spark-tech-bar">
-            <span class="dy-spark-tech-tag rose">DeepSeek-V3</span>
+            <span class="dy-spark-tech-tag rose" id="dy-spark-active-model-tag">多模态大模型</span>
             <span class="dy-spark-tech-tag cyan">Manifest V3</span>
             <span class="dy-spark-tech-tag">ES6+ DOM Engine</span>
             <span class="dy-spark-tech-tag">7D MemoryVault</span>
@@ -110,17 +167,57 @@
         </div>
 
         <div class="dy-spark-body">
-          <!-- 基础连接与引擎总控卡片 -->
+          <!-- 基础连接与大模型 API 管理列表 (支持任意多模态/文本模型) -->
           <div class="dy-spark-section">
-            <div class="dy-spark-field">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <label class="dy-spark-label" style="font-weight: 600;">🔑 DeepSeek API 密钥</label>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <label class="dy-spark-label" style="font-weight: 600; color: #fff;">
+                <span>🤖 大模型 API 接口选择与管理</span>
+              </label>
+              <div style="display: flex; gap: 6px;">
+                <button id="dy-spark-add-api" class="dy-spark-btn" style="padding: 2px 7px; font-size: 11px; background: rgba(37,244,238,0.18); color: #25f4ee; border: 1px solid rgba(37,244,238,0.35);">+ 新增接口</button>
                 <button id="dy-spark-test-key" class="dy-spark-btn" style="padding: 2px 8px; font-size: 11px; background: linear-gradient(135deg, #fe2c55, #ff5376); border: none;">⚡ 测试连通</button>
               </div>
-              <input type="password" id="dy-spark-api-key" class="dy-spark-input" placeholder="输入 sk-... (本地加密存储，绝不外泄)" />
             </div>
 
-            <div class="dy-spark-switch-row">
+            <!-- 当前选中接口下拉选择框 -->
+            <div class="dy-spark-field">
+              <select id="dy-spark-api-select" class="dy-spark-input" style="font-weight: 600; padding: 6px 8px;"></select>
+            </div>
+
+            <!-- 选中接口的具体配置卡片 -->
+            <div id="dy-spark-api-card" style="background: rgba(0,0,0,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 9px; display: flex; flex-direction: column; gap: 7px;">
+              <div style="display: flex; gap: 6px;">
+                <input type="text" id="dy-spark-api-name" class="dy-spark-input" style="flex: 1; font-weight: 600;" placeholder="接口名称/备注" />
+                <button id="dy-spark-del-api" class="dy-spark-btn" style="padding: 3px 8px; font-size: 11px; background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.3); color: #f87171;" title="删除当前接口">删除</button>
+              </div>
+
+              <div class="dy-spark-field">
+                <label class="dy-spark-label" style="font-size: 11px;">接口地址 (Base URL)</label>
+                <input type="text" id="dy-spark-api-url" class="dy-spark-input" placeholder="如 https://api.deepseek.com/chat/completions" />
+              </div>
+
+              <div class="dy-spark-field">
+                <label class="dy-spark-label" style="font-size: 11px;">API 密钥 (API Key)</label>
+                <input type="password" id="dy-spark-api-key" class="dy-spark-input" placeholder="输入 sk-... (本地安全加密存储)" />
+              </div>
+
+              <div class="dy-spark-field">
+                <label class="dy-spark-label" style="font-size: 11px;">模型名称 (Model Name)</label>
+                <input type="text" id="dy-spark-api-model" class="dy-spark-input" placeholder="如 deepseek-chat / deepseek-vl / gpt-4o / qwen-vl-plus" />
+              </div>
+
+              <div class="dy-spark-switch-row" style="background: rgba(255,255,255,0.03); padding: 5px 8px; border-radius: 6px;">
+                <label class="dy-spark-label" style="font-size: 11.5px; color: #25f4ee; font-weight: 500;">
+                  <span>🖼️ 此为多模态模型 (支持直接看图发表情包)</span>
+                </label>
+                <label class="dy-spark-toggle-switch">
+                  <input type="checkbox" id="dy-spark-api-multimodal" />
+                  <span class="dy-spark-toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="dy-spark-switch-row" style="margin-top: 4px;">
               <label class="dy-spark-label" style="font-weight: 600; font-size: 12.5px; color: #fff;">🤖 启动 AI 全自动秒回与巡检</label>
               <label class="dy-spark-toggle-switch">
                 <input type="checkbox" id="dy-spark-enable-toggle" />
@@ -147,15 +244,16 @@
             </div>
           </div>
 
-          <!-- 视觉识别：图片 / 表情包 / 动图 -->
+          <!-- 视觉识别：图片 / 表情包 / 动图 (当主模型为纯文本时生效) -->
           <div class="dy-spark-section">
             <div class="dy-spark-switch-row">
-              <label class="dy-spark-label" style="font-weight: 600; color: #fff;">👁️ 图片/表情包/动图识别</label>
+              <label class="dy-spark-label" style="font-weight: 600; color: #fff;">👁️ 辅助图片/表情包识别</label>
               <label class="dy-spark-toggle-switch">
                 <input type="checkbox" id="dy-spark-vision-toggle" checked />
                 <span class="dy-spark-toggle-slider"></span>
               </label>
             </div>
+            <div id="dy-spark-vision-multimodal-hint" style="font-size: 11px; color: #20d57e; display: none;">✔ 当前主模型已开启【多模态识图】，图片将直接传给主模型识别</div>
             <div style="display: flex; gap: 6px;">
               <select id="dy-spark-vision-provider" class="dy-spark-input" style="flex: 1; padding: 5px 6px;">
                 <option value="zhipu">智谱 GLM-4V-Flash (免费)</option>
@@ -164,7 +262,7 @@
               </select>
               <button id="dy-spark-test-vision" class="dy-spark-btn" style="padding: 2px 8px; font-size: 11px;">测试</button>
             </div>
-            <input type="password" id="dy-spark-vision-key" class="dy-spark-input" placeholder="视觉模型 API Key（DeepSeek 不支持看图，需单独填）" />
+            <input type="password" id="dy-spark-vision-key" class="dy-spark-input" placeholder="辅助视觉 API Key（纯文本主模型时生效）" />
             <div id="dy-spark-vision-custom-box" style="display: none; flex-direction: column; gap: 6px;">
               <input type="text" id="dy-spark-vision-url" class="dy-spark-input" placeholder="接口地址 .../chat/completions" />
               <input type="text" id="dy-spark-vision-model" class="dy-spark-input" placeholder="模型名，如 gpt-4o-mini" />
@@ -392,6 +490,10 @@
       if (defaultGroup) {
         currentConfig.prompt = defaultGroup.prompt;
       }
+      const activeApi = getActiveApiProfile();
+      if (activeApi) {
+        currentConfig.apiKey = activeApi.apiKey || "";
+      }
       chrome.storage.local.set({ dy_spark_config: currentConfig }, () => {
         updateStatus(currentConfig.enabled);
         showSaveHint();
@@ -402,18 +504,77 @@
     }
   }
 
+  function getActiveApiProfile() {
+    const list = currentConfig.apiProfiles || DEFAULT_API_PROFILES;
+    const activeId = currentConfig.activeApiId || list[0].id;
+    return list.find(p => p.id === activeId) || list[0];
+  }
+
+  function renderApiProfileSelectorAndCard(onlyOptions = false) {
+    const apiSelect = document.getElementById("dy-spark-api-select");
+    const nameInput = document.getElementById("dy-spark-api-name");
+    const urlInput = document.getElementById("dy-spark-api-url");
+    const keyInput = document.getElementById("dy-spark-api-key");
+    const modelInput = document.getElementById("dy-spark-api-model");
+    const multiCheckbox = document.getElementById("dy-spark-api-multimodal");
+    const delBtn = document.getElementById("dy-spark-del-api");
+    const modelTag = document.getElementById("dy-spark-active-model-tag");
+    const multiHint = document.getElementById("dy-spark-vision-multimodal-hint");
+
+    if (!apiSelect) return;
+
+    const list = currentConfig.apiProfiles || DEFAULT_API_PROFILES;
+    const active = getActiveApiProfile();
+
+    // 1. 刷新下拉选项
+    apiSelect.innerHTML = "";
+    list.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = `${p.isMultimodal ? "🖼️[多模态] " : "📝[纯文本] "}${p.name} (${p.model || "未设模型"})`;
+      if (p.id === active.id) opt.selected = true;
+      apiSelect.appendChild(opt);
+    });
+
+    if (modelTag) {
+      modelTag.textContent = active.model || active.name || "自定义模型";
+    }
+
+    if (multiHint) {
+      multiHint.style.display = active.isMultimodal ? "block" : "none";
+    }
+
+    if (onlyOptions) return;
+
+    // 2. 填充详情卡片
+    if (nameInput) nameInput.value = active.name || "";
+    if (urlInput) urlInput.value = active.baseUrl || "";
+    if (keyInput) keyInput.value = active.apiKey || "";
+    if (modelInput) modelInput.value = active.model || "";
+    if (multiCheckbox) multiCheckbox.checked = !!active.isMultimodal;
+    if (delBtn) delBtn.disabled = list.length <= 1;
+  }
+
   function bindEvents() {
     const toggleBtn = document.getElementById("dy-spark-toggle-btn");
     const panel = document.getElementById("dy-spark-panel");
     const closeBtn = document.getElementById("dy-spark-close");
     const enableToggle = document.getElementById("dy-spark-enable-toggle");
-    const apiKeyInput = document.getElementById("dy-spark-api-key");
     const whitelistInput = document.getElementById("dy-spark-whitelist");
     const timeInput = document.getElementById("dy-spark-time");
     const sparkToggle = document.getElementById("dy-spark-spark-toggle");
     const testKeyBtn = document.getElementById("dy-spark-test-key");
     const diagnoseBtn = document.getElementById("dy-spark-diagnose-btn");
     const testSendBtn = document.getElementById("dy-spark-test-send-btn");
+
+    const apiSelect = document.getElementById("dy-spark-api-select");
+    const addApiBtn = document.getElementById("dy-spark-add-api");
+    const delApiBtn = document.getElementById("dy-spark-del-api");
+    const apiNameInput = document.getElementById("dy-spark-api-name");
+    const apiUrlInput = document.getElementById("dy-spark-api-url");
+    const apiKeyInput = document.getElementById("dy-spark-api-key");
+    const apiModelInput = document.getElementById("dy-spark-api-model");
+    const apiMultiToggle = document.getElementById("dy-spark-api-multimodal");
 
     const addPersonaBtn = document.getElementById("dy-spark-add-persona");
     const resetPersonaBtn = document.getElementById("dy-spark-reset-persona");
@@ -425,8 +586,79 @@
     toggleBtn.addEventListener("click", () => panel.classList.toggle("open"));
     closeBtn.addEventListener("click", () => panel.classList.remove("open"));
 
+    // 切换生效 API Profile
+    if (apiSelect) {
+      apiSelect.addEventListener("change", () => {
+        currentConfig.activeApiId = apiSelect.value;
+        const active = getActiveApiProfile();
+        currentConfig.apiKey = active.apiKey || "";
+        renderApiProfileSelectorAndCard(false);
+        persistConfig();
+        log(`已切换当前模型接口为: 【${active.name}】(${active.model})`, "info");
+      });
+    }
+
+    // 实时编辑当前生效 API
+    const saveActiveApiRealtime = () => {
+      const active = getActiveApiProfile();
+      if (apiNameInput) active.name = apiNameInput.value.trim() || "自定义接口";
+      if (apiUrlInput) active.baseUrl = apiUrlInput.value.trim();
+      if (apiKeyInput) active.apiKey = apiKeyInput.value.trim();
+      if (apiModelInput) active.model = apiModelInput.value.trim();
+      if (apiMultiToggle) active.isMultimodal = apiMultiToggle.checked;
+      currentConfig.apiKey = active.apiKey || "";
+      renderApiProfileSelectorAndCard(true); // 刷新下拉选项文字
+      persistConfig();
+    };
+
+    if (apiNameInput) apiNameInput.addEventListener("input", saveActiveApiRealtime);
+    if (apiUrlInput) apiUrlInput.addEventListener("input", saveActiveApiRealtime);
+    if (apiKeyInput) apiKeyInput.addEventListener("input", saveActiveApiRealtime);
+    if (apiModelInput) apiModelInput.addEventListener("input", saveActiveApiRealtime);
+    if (apiMultiToggle) apiMultiToggle.addEventListener("change", saveActiveApiRealtime);
+
+    // 新增 API 接口
+    if (addApiBtn) {
+      addApiBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const list = currentConfig.apiProfiles || DEFAULT_API_PROFILES;
+        const newId = "api_" + Date.now();
+        const newProfile = {
+          id: newId,
+          name: "✨ 自定义接口 " + (list.length + 1),
+          baseUrl: "https://api.deepseek.com/chat/completions",
+          apiKey: "",
+          model: "deepseek-chat",
+          isMultimodal: true,
+          temperature: 0.85
+        };
+        list.push(newProfile);
+        currentConfig.apiProfiles = list;
+        currentConfig.activeApiId = newId;
+        renderApiProfileSelectorAndCard(false);
+        persistConfig();
+        log("已新增 API 接口，请填写 Base URL 与 API Key", "info");
+      });
+    }
+
+    // 删除当前 API 接口
+    if (delApiBtn) {
+      delApiBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const list = currentConfig.apiProfiles || DEFAULT_API_PROFILES;
+        if (list.length <= 1) return;
+        const active = getActiveApiProfile();
+        currentConfig.apiProfiles = list.filter(p => p.id !== active.id);
+        currentConfig.activeApiId = currentConfig.apiProfiles[0].id;
+        renderApiProfileSelectorAndCard(false);
+        persistConfig();
+        log(`已删除接口【${active.name}】`, "warn");
+      });
+    }
+
     const saveBaseFields = () => {
-      currentConfig.apiKey = apiKeyInput.value.trim();
+      const active = getActiveApiProfile();
+      currentConfig.apiKey = active ? active.apiKey : "";
       currentConfig.enabled = enableToggle.checked;
       currentConfig.whitelist = whitelistInput.value.trim();
       currentConfig.sparkTime = timeInput.value;
@@ -438,8 +670,6 @@
       saveBaseFields();
       log(enableToggle.checked ? "自动聊天已开启" : "自动聊天已暂停", enableToggle.checked ? "success" : "warn");
     });
-    // 改为 input 实时触发保存，无需鼠标失焦
-    apiKeyInput.addEventListener("input", saveBaseFields);
     whitelistInput.addEventListener("input", saveBaseFields);
     timeInput.addEventListener("change", saveBaseFields);
     sparkToggle.addEventListener("change", saveBaseFields);
@@ -452,7 +682,7 @@
         activeGroup.friends = personaFriendsInput.value.trim();
       }
       activeGroup.prompt = promptInput.value;
-      renderPersonaTabsAndCard(true); // 只刷新顶部 Tab 徽标，不打断输入框光标
+      renderPersonaTabsAndCard(true);
       persistConfig();
     };
 
@@ -503,21 +733,24 @@
 
     testKeyBtn.addEventListener("click", async (e) => {
       e.preventDefault();
-      const key = apiKeyInput.value.trim();
-      if (!key) {
-        log("请先输入 API Key 再进行测试", "warn");
+      const active = getActiveApiProfile();
+      if (!active.apiKey) {
+        log(`请先输入【${active.name}】的 API Key 再进行测试`, "warn");
         return;
       }
 
       const originalText = testKeyBtn.innerText;
       testKeyBtn.innerText = "测试中...";
       testKeyBtn.disabled = true;
-      log("正在发起 DeepSeek 连接测试...", "info");
+      log(`正在发起对【${active.name}】(${active.model}) 的连通性测试...`, "info");
 
       try {
-        const res = await sendToBackground({ action: "TEST_API_KEY", apiKey: key });
+        const res = await sendToBackground({
+          action: "TEST_API_PROFILE",
+          apiProfile: active
+        });
         if (res && res.success) {
-          log("✔ DeepSeek API 连通成功！可正常使用", "success");
+          log(`✔ 【${active.name}】(${active.model}) 连通成功！可正常使用`, "success");
         } else {
           log(`❌ 连接失败: ${res ? res.error : "未获取到返回结果"}`, "error");
         }
@@ -713,8 +946,19 @@
               }
             });
           }
+
+          // 自动平滑迁移或初始化多接口列表
+          if (!saved.apiProfiles || !Array.isArray(saved.apiProfiles) || saved.apiProfiles.length === 0) {
+            currentConfig.apiProfiles = JSON.parse(JSON.stringify(DEFAULT_API_PROFILES));
+            if (saved.apiKey) {
+              currentConfig.apiProfiles[0].apiKey = saved.apiKey;
+              currentConfig.apiProfiles[1].apiKey = saved.apiKey;
+            }
+          }
         }
-        document.getElementById("dy-spark-api-key").value = currentConfig.apiKey;
+
+        renderApiProfileSelectorAndCard(false);
+
         document.getElementById("dy-spark-enable-toggle").checked = currentConfig.enabled;
         document.getElementById("dy-spark-whitelist").value = currentConfig.whitelist;
         document.getElementById("dy-spark-time").value = currentConfig.sparkTime;
@@ -729,9 +973,10 @@
 
         renderPersonaTabsAndCard(false);
         updateStatus(currentConfig.enabled);
-        log("抖音火花助手 AI 已就绪 (v2.2.0 网络梗图识别+防套路自卫版)", "info");
-        if (!currentConfig.visionApiKey) {
-          log("ℹ 未填视觉模型 Key：图片/表情包将无法识别画面内容", "warn");
+        log("抖音火花助手 AI 已就绪 (v2.3.0 自定义多模型+多模态直接识图版)", "info");
+        const activeApi = getActiveApiProfile();
+        if (activeApi && !activeApi.apiKey) {
+          log(`ℹ 提示：当前选中的【${activeApi.name}】未配置 API Key，请在上方填写`, "warn");
         }
         configChangeCallbacks.forEach(cb => cb(currentConfig));
       });
@@ -781,7 +1026,16 @@
   }
 
   window.DySparkUI = {
-    getConfig: () => currentConfig,
+    getConfig: () => {
+      const active = getActiveApiProfile();
+      return {
+        ...currentConfig,
+        apiKey: active ? active.apiKey : (currentConfig.apiKey || ""),
+        activeApiProfile: active
+      };
+    },
+    getActiveApiProfile: getActiveApiProfile,
+    getApiProfiles: () => currentConfig.apiProfiles || DEFAULT_API_PROFILES,
     getVisionConfig: getVisionConfig,
     getPersonaForFriend: getPersonaForFriend,
     getPriorityBroInfo: getPriorityBroInfo,

@@ -1259,9 +1259,9 @@
   }
 
   /**
-   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.2.0)
+   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.3.0 支持多模态直传与深度去人机)
    */
-  function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null, friendName = "") {
+  function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null, friendName = "", apiProfile = null) {
     const friendReplies = recentBotRepliesByFriend.get(friendName) || recentBotReplies.slice(-5);
     const antiRepeatRule = friendReplies.length > 0
       ? `\n你刚跟对方说过：[${friendReplies.slice(-4).join(" / ")}]，本次禁止复读上面说过的词句或相同句式。`
@@ -1295,9 +1295,9 @@
       tonePrompt = `【当前情境】对方在正常交流/问问题/聊日常，没有攻击你。像真实好朋友一样自然、靠谱地正面回答，绝对禁止无故骂人或攻击，随性口语（4~18字），不加句号。`;
     }
 
-    // 提取当前未读消息之前的最近 18 条真实历史记录（加长上下文记忆，彻底告别单字短记忆失忆与呆滞）
+    // 提取当前未读消息之前的最近 32 条真实历史记录（超长上下文记忆，彻底告别单字短记忆失忆与呆滞断层）
     const historyEndIdx = Math.max(0, allMessages.length - unreadIncomingList.length);
-    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 18), historyEndIdx);
+    const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 32), historyEndIdx);
     const lastHistoryTopic = historySlice.length > 0 ? historySlice[historySlice.length - 1].text : "";
 
     const rawTexts = unreadIncomingList.map(m => m.text);
@@ -1335,17 +1335,38 @@
 2. 绝不能被占便宜当儿子或认爹，对方叫你喊爹坚决怼回；
 3. 听懂网络热梗与阴阳怪气，结合前文真实历史与表情包画面连贯理解，严禁无脑顺从对方的恶俗调侃。`;
 
+    const antiNpcRules = `\n【🔥 绝杀“人机感”硬核规范（违者视为严重故障）】
+1. 【字数短脆，禁止长篇大论】：真人手机打字绝大多数在 3~14 字！偶尔一两句不超过 20 字，严禁发小作文。
+2. 【严禁“人机空洞客套”】：绝对禁止“哈哈确实”、“确实啊”、“你说得对”、“好呀”、“那挺好的”、“也是哈”等机器人起手式！
+3. 【严禁客服式追问】：绝对不要客套追问“你觉得呢？”、“你在忙什么呀？”、“你今天怎么样？”，自然表达自己的态度或随口唠嗑即可。
+4. 【针对笑点直接反应，绝不机械复读】：对方发表情包或聊具体事情，直接给真实情绪反应（赞同/吐槽/拆台/无语/接梗），严禁机械复读对方后半句。
+5. 【标点符号规范】：真人私信单句末尾【严禁使用句号“。”】！可以不加标点或空格，随性自然，情绪到位时可带 1 个抖音表情如 [狗头][捂脸][裂开][泣不成声][白眼]。
+【输出硬性要求】：只输出你要发给朋友的那一句话本身，严禁任何解释、前缀、引号或AI助理式说明。`;
+
     const enhancedSystemPrompt = `你是这个抖音号的号主本人，正拿着手机跟朋友私聊。
 ${persona.prompt}
-${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}
-【硬性要求】短句（几个字到十来字），随性自然，完全像手机打字，严禁句号“。”，严禁任何AI助理式客套与解释，只输出你要发送的那句话。`;
+${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}`;
 
+    const isMultimodal = apiProfile ? !!apiProfile.isMultimodal : false;
     const payload = [{ role: "system", content: enhancedSystemPrompt }];
 
     for (const h of historySlice) {
       const role = h.isSelf ? "assistant" : "user";
       const prevTurn = payload[payload.length - 1];
-      if (prevTurn && prevTurn.role === role) {
+
+      // 如果当前是多模态模式且历史该条为近期带图消息
+      if (isMultimodal && !h.isSelf && (h.msgType === "sticker" || h.msgType === "image") && (h.dataUrl || h.mediaSrc)) {
+        payload.push({
+          role: "user",
+          content: [
+            { type: "text", text: h.text || "[发来表情包/图片]" },
+            { type: "image_url", image_url: { url: h.dataUrl || h.mediaSrc } }
+          ]
+        });
+        continue;
+      }
+
+      if (prevTurn && prevTurn.role === role && typeof prevTurn.content === "string") {
         prevTurn.content = `${prevTurn.content}，${h.text}`;
       } else {
         payload.push({ role, content: h.text });
@@ -1353,11 +1374,28 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${med
     }
 
     const userMessageContent = rawTexts.join("，");
-    const lastTurn = payload[payload.length - 1];
-    if (lastTurn && lastTurn.role === "user") {
-      lastTurn.content = `${lastTurn.content}，${userMessageContent}`;
+    const incomingImages = isMultimodal
+      ? unreadIncomingList.filter(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && (m.dataUrl || m.mediaSrc))
+      : [];
+
+    if (incomingImages.length > 0) {
+      const contentParts = [
+        { type: "text", text: userMessageContent || "对方发来了表情包/图片" }
+      ];
+      for (const img of incomingImages.slice(0, 3)) {
+        contentParts.push({
+          type: "image_url",
+          image_url: { url: img.dataUrl || img.mediaSrc }
+        });
+      }
+      payload.push({ role: "user", content: contentParts });
     } else {
-      payload.push({ role: "user", content: userMessageContent });
+      const lastTurn = payload[payload.length - 1];
+      if (lastTurn && lastTurn.role === "user" && typeof lastTurn.content === "string") {
+        lastTurn.content = `${lastTurn.content}，${userMessageContent}`;
+      } else {
+        payload.push({ role: "user", content: userMessageContent });
+      }
     }
 
     return payload;
@@ -1556,17 +1594,19 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${med
         window.DySparkUI.log(`🧠 已带入 ${memoryContext.memories.length} 条7天动态记忆`, "info");
       }
 
-      const payload = buildHumanizedPayload(persona, messages, unreadIncoming, memoryContext, friendName);
+      const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
+      const payload = buildHumanizedPayload(persona, messages, unreadIncoming, memoryContext, friendName, apiProfile);
 
-      // 调用 DeepSeek（带 12 秒超时保护）
+      // 调用大模型接口（支持自定义多接口与多模态直接看图，带 18 秒超时保护）
       const res = await sendMessageWithTimeout(
-        { action: "CALL_DEEPSEEK", apiKey: config.apiKey, messages: payload },
-        12000
+        { action: "CALL_CHAT_MODEL", apiProfile, apiKey: config.apiKey, messages: payload },
+        18000
       );
 
       if (res && res.success && res.reply) {
         const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
-        window.DySparkUI.log(`DeepSeek 回复: "${cleanReply}"`, "success");
+        const modelLabel = (apiProfile && apiProfile.name) || "大模型";
+        window.DySparkUI.log(`🤖【${modelLabel}】回复: "${cleanReply}"`, "success");
 
         await sendMessageToChat(cleanReply, friendName);
         unreadIncoming.forEach(m => markMessageReplied(m));
@@ -1646,18 +1686,20 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${med
       .filter(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && !m.hasSpecificMeaning && (m.mediaSrc || m.dataUrl));
     for (const hc of historyCand.slice(-2)) testItems.push(hc);
     await enrichMediaDescriptions(testItems, visionConfig);
-    const payload = buildHumanizedPayload(persona, messages, [lastMsg], null, friendName);
+    const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
+    const payload = buildHumanizedPayload(persona, messages, [lastMsg], null, friendName, apiProfile);
 
     const res = await sendMessageWithTimeout(
-      { action: "CALL_DEEPSEEK", apiKey: config.apiKey, messages: payload },
-      12000
+      { action: "CALL_CHAT_MODEL", apiProfile, apiKey: config.apiKey, messages: payload },
+      18000
     );
 
     if (res && res.success && res.reply) {
       const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
       markMessageReplied(lastMsg);
       friendLastServedAt.set(friendName, Date.now());
-      window.DySparkUI.log(`DeepSeek 生成: "${cleanReply}"`, "success");
+      const modelLabel = (apiProfile && apiProfile.name) || "大模型";
+      window.DySparkUI.log(`🤖【${modelLabel}】生成: "${cleanReply}"`, "success");
       try {
         await sendMessageToChat(cleanReply, friendName);
         window.DySparkUI.log("✔ 发送成功！", "success");
@@ -1671,7 +1713,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${styleSection}${memorySection}${med
 
   function runDiagnose() {
     const config = window.DySparkUI ? window.DySparkUI.getConfig() : {};
-    window.DySparkUI.log("===== 开始全面诊断 (v2.2.0) =====", "info");
+    window.DySparkUI.log("===== 开始全面诊断 (v2.3.0) =====", "info");
 
     const unread = findUnreadRedDots();
     if (unread.length > 0) {
@@ -2104,9 +2146,11 @@ ${persona.prompt}${memText}
 
       const userPrompt = `视频作者：@${videoInfo.author}\n视频文案：${videoInfo.desc}${commentsContext}\n请直接输出你要发在评论区的那句话：`;
 
+      const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
       const res = await sendMessageWithTimeout(
         {
-          action: "CALL_DEEPSEEK",
+          action: "CALL_CHAT_MODEL",
+          apiProfile,
           apiKey: config.apiKey,
           messages: [
             { role: "system", content: systemPrompt },
@@ -2275,9 +2319,11 @@ ${persona.prompt}${memText}
 
       const sysPrompt = `${broInfo.prompt || config.prompt}\n你刚刚刷到一个抖音视频《${videoInfo.desc.substring(0, 28)}》（作者@${videoInfo.author}），顺手转发给了你的死党[${targetBro || "朋友"}]，请配上一句4~14字的损友吐槽（比如“快看这个大傻春，简直在演你[泣不成声]”、“看到这个第一反应就是你个臭傻逼[狗头]”），不打句号！`;
 
+      const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
       const res = await sendMessageWithTimeout(
         {
-          action: "CALL_DEEPSEEK",
+          action: "CALL_CHAT_MODEL",
+          apiProfile,
           apiKey: config.apiKey,
           messages: [
             { role: "system", content: sysPrompt },
@@ -2353,8 +2399,9 @@ ${persona.prompt}${memText}
         { role: "user", content: "生成一句随性日常问候短句" }
       ];
 
+      const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
       chrome.runtime.sendMessage(
-        { action: "CALL_DEEPSEEK", apiKey: config.apiKey, messages: messages },
+        { action: "CALL_CHAT_MODEL", apiProfile, apiKey: config.apiKey, messages: messages },
         async (res) => {
           if (res && res.success && res.reply) {
             try {

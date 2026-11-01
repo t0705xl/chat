@@ -5,15 +5,15 @@ const VAULT_BRIDGE_URL = "http://127.0.0.1:18991";
 console.log("[抖音火花助手] Background Service Worker 已启动 (v1.5.0)");
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "CALL_DEEPSEEK") {
-    handleDeepSeekChat(request)
+  if (request.action === "CALL_CHAT_MODEL" || request.action === "CALL_DEEPSEEK") {
+    handleChatModelCall(request)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ success: false, error: err.message || "请求异常" }));
     return true;
   }
 
-  if (request.action === "TEST_API_KEY") {
-    testApiKey(request.apiKey)
+  if (request.action === "TEST_API_PROFILE" || request.action === "TEST_API_KEY") {
+    testApiProfile(request)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ success: false, error: err.message || "请求异常" }));
     return true;
@@ -479,40 +479,112 @@ async function retryPendingQueue(queue, apiKey) {
 }
 
 /**
- * 调用 DeepSeek 对话接口
+ * 预处理多模态消息中的图片：将外部 CDN 或网络图片下载并使用 OffscreenCanvas 转为标准 Base64 Data URL
  */
-async function handleDeepSeekChat({
+async function prepareMultimodalMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const clone = JSON.parse(JSON.stringify(messages));
+  for (const m of clone) {
+    if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part && part.type === "image_url" && part.image_url && part.image_url.url) {
+          const rawUrl = part.image_url.url;
+          if (rawUrl.startsWith("data:image/")) continue;
+          if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 6000);
+              const resp = await fetch(rawUrl, { credentials: "omit", signal: controller.signal });
+              clearTimeout(timer);
+              if (resp.ok) {
+                const blob = await resp.blob();
+                const { base64 } = await prepareImageFromBlob(blob);
+                part.image_url.url = `data:image/jpeg;base64,${base64}`;
+              }
+            } catch (e) {
+              console.warn("[多模态识图] 图片下载转Base64失败:", e.message);
+            }
+          }
+        }
+      }
+    }
+  }
+  return clone;
+}
+
+/**
+ * 纯文本模型兜底：将消息数组里的多模态图片结构平铺为纯文本，防止纯文本接口报错 400
+ */
+function flattenMultimodalMessagesToText(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((m) => {
+    if (Array.isArray(m.content)) {
+      const textParts = m.content
+        .filter((p) => p && (p.type === "text" || p.text))
+        .map((p) => p.text || "");
+      return {
+        ...m,
+        content: textParts.join(" ") || "[发来图片表情包]"
+      };
+    }
+    return m;
+  });
+}
+
+/**
+ * 调用大语言模型对话接口 (支持自定义多接口列表、多模态直接看图、DeepSeek/Qwen/GLM/OpenAI兼容端点)
+ */
+async function handleChatModelCall({
+  apiProfile,
   apiKey,
+  baseUrl,
+  model,
   messages,
-  temperature = 0.9,
-  presence_penalty = 0.3,
-  frequency_penalty = 0.5
+  temperature = 0.85,
+  presence_penalty = 0.2,
+  frequency_penalty = 0.3
 }) {
-  if (!apiKey || !apiKey.trim()) {
-    return { success: false, error: "未配置 DeepSeek API Key" };
+  const profile = apiProfile || {};
+  const cleanKey = (profile.apiKey || apiKey || "").trim();
+  const targetUrl = (profile.baseUrl || baseUrl || DEEPSEEK_API_URL).trim();
+  const targetModel = (profile.model || model || "deepseek-chat").trim();
+  const isMultimodal = profile.isMultimodal !== undefined ? profile.isMultimodal : true;
+
+  if (!cleanKey) {
+    return { success: false, error: `未配置 API 密钥 (当前接口: ${profile.name || targetModel})` };
   }
 
-  const cleanKey = apiKey.trim();
+  // 1. 根据是否多模态，决定图片格式或平铺纯文本
+  let processedMessages = messages;
+  if (isMultimodal) {
+    processedMessages = await prepareMultimodalMessages(messages);
+  } else {
+    processedMessages = flattenMultimodalMessagesToText(messages);
+  }
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const timeoutId = setTimeout(() => controller.abort(), 22000);
 
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const bodyPayload = {
+      model: targetModel,
+      messages: processedMessages,
+      temperature: typeof profile.temperature === "number" ? profile.temperature : temperature,
+      max_tokens: 150
+    };
+
+    if (/deepseek|openai|gpt|qwen/i.test(targetUrl) || /deepseek|gpt|qwen/i.test(targetModel)) {
+      bodyPayload.presence_penalty = presence_penalty;
+      bodyPayload.frequency_penalty = frequency_penalty;
+    }
+
+    const response = await fetch(targetUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${cleanKey}`
       },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: messages,
-        temperature: temperature,
-        top_p: 0.92,
-        presence_penalty: presence_penalty,
-        frequency_penalty: frequency_penalty,
-        max_tokens: 100
-      }),
+      body: JSON.stringify(bodyPayload),
       signal: controller.signal
     });
 
@@ -534,7 +606,7 @@ async function handleDeepSeekChat({
 
     const data = await response.json();
     if (data.choices && data.choices.length > 0 && data.choices[0].message) {
-      let reply = data.choices[0].message.content.trim();
+      let reply = String(data.choices[0].message.content || "").trim();
       reply = reply.replace(/^["'“‘]|["'”’]$/g, "");
       reply = reply.replace(/[。~～]+$/g, "");
       return { success: true, reply };
@@ -543,21 +615,32 @@ async function handleDeepSeekChat({
     }
   } catch (error) {
     if (error.name === "AbortError") {
-      return { success: false, error: "请求 DeepSeek 超时 (20s)" };
+      return { success: false, error: `请求模型 [${targetModel}] 超时 (22s)` };
     }
     return { success: false, error: `网络请求异常: ${error.message}` };
   }
 }
 
-async function testApiKey(apiKey) {
-  return await handleDeepSeekChat({
-    apiKey: apiKey,
+/**
+ * 测试选中的大模型接口连接连通性
+ */
+async function testApiProfile(request) {
+  const profile = request.apiProfile || {
+    apiKey: request.apiKey,
+    baseUrl: request.baseUrl || DEEPSEEK_API_URL,
+    model: request.model || "deepseek-chat",
+    isMultimodal: false
+  };
+  return await handleChatModelCall({
+    apiProfile: profile,
     messages: [
-      { role: "system", content: "你是一个助手。" },
-      { role: "user", content: "测试连接，请回复：ok" }
+      { role: "system", content: "你是一个社交私信助手。" },
+      { role: "user", content: "测试连接，请仅回复两个字：收到" }
     ],
-    temperature: 0.1,
-    presence_penalty: 0,
-    frequency_penalty: 0
+    temperature: 0.1
   });
 }
+
+// 保持向下兼容别名
+const handleDeepSeekChat = handleChatModelCall;
+const testApiKey = testApiProfile;
