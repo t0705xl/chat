@@ -2,7 +2,7 @@
 const DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions";
 const VAULT_BRIDGE_URL = "http://127.0.0.1:18991";
 
-console.log("[抖音火花助手] Background Service Worker 已启动 (v1.5.0)");
+console.log("[抖音火花助手] Background Service Worker 已启动 (v2.4.0)");
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "CALL_CHAT_MODEL" || request.action === "CALL_DEEPSEEK") {
@@ -105,8 +105,34 @@ function arrayBufferToBase64(buf) {
 }
 
 /**
- * 把任意图片 Blob（JPG/PNG/WebP/GIF/动图 WebP）转成适合视觉模型的 JPEG：
- * 动图会抽取 首帧/中间帧/末帧 横向拼接，让模型看懂动作变化
+ * 高鲁棒性下载图片 Blob（先免凭据请求绕过 CORS 通配符冲突，若 403/失败再带 Cookie 重试）
+ */
+async function fetchImageBlobResilient(src, timeoutMs = 6500) {
+  const tryFetch = async (creds) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(src, { credentials: creds, signal: controller.signal });
+      clearTimeout(timer);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.blob();
+    } catch (e) {
+      clearTimeout(timer);
+      throw e;
+    }
+  };
+
+  try {
+    return await tryFetch("omit");
+  } catch (e1) {
+    return await tryFetch("include");
+  }
+}
+
+/**
+ * 把任意图片 Blob（JPG/PNG/WebP/GIF/动图 WebP）转成适合视觉模型的超清 JPEG (v2.4.0)：
+ * - 静态梗图最高保留 768px 分辨率，确保表情包小字与字幕清晰可读
+ * - 动图抽取最多 4 个关键帧（10%/40%/70%/95%），采用 2x2 四宫格高清拼接并标注 #1~#4 帧序，看清完整剧情反转
  */
 async function prepareImageFromBlob(blob) {
   const type = (blob.type || "").toLowerCase();
@@ -118,7 +144,20 @@ async function prepareImageFromBlob(blob) {
       await decoder.tracks.ready;
       const track = decoder.tracks.selectedTrack;
       const count = track ? track.frameCount : 1;
-      const idxs = count >= 3 ? [0, Math.floor(count / 2), count - 1] : count === 2 ? [0, 1] : [0];
+      let idxs = [0];
+      if (count >= 4) {
+        idxs = [
+          Math.min(count - 1, Math.floor(count * 0.08)),
+          Math.floor(count * 0.38),
+          Math.floor(count * 0.68),
+          count - 1
+        ];
+        idxs = Array.from(new Set(idxs));
+      } else if (count === 3) {
+        idxs = [0, 1, 2];
+      } else if (count === 2) {
+        idxs = [0, 1];
+      }
       for (const i of idxs) {
         const { image } = await decoder.decode({ frameIndex: i });
         frames.push(image);
@@ -139,36 +178,67 @@ async function prepareImageFromBlob(blob) {
   }));
 
   const isAnimated = frames.length > 1;
-  const targetH = isAnimated ? 256 : Math.min(512, dims[0].h);
-  const scaled = dims.map((d) => {
-    let h = targetH;
-    let w = Math.round((d.w / d.h) * h);
-    if (!isAnimated && w > 512) {
-      w = 512;
-      h = Math.round((d.h / d.w) * w);
-    }
-    return { w: Math.max(1, w), h: Math.max(1, h) };
-  });
+  const maxCellSize = isAnimated ? 360 : 768;
 
-  const gap = isAnimated ? 6 : 0;
-  const totalW = scaled.reduce((s, d) => s + d.w, 0) + gap * (scaled.length - 1);
-  const totalH = Math.max(...scaled.map((d) => d.h));
+  const scaleDim = (w, h, maxLim) => {
+    let nw = w;
+    let nh = h;
+    if (nw > maxLim || nh > maxLim) {
+      if (nw >= nh) {
+        nh = Math.round((nh / nw) * maxLim);
+        nw = maxLim;
+      } else {
+        nw = Math.round((nw / nh) * maxLim);
+        nh = maxLim;
+      }
+    }
+    return { w: Math.max(1, nw), h: Math.max(1, nh) };
+  };
+
+  if (!isAnimated) {
+    const s = scaleDim(dims[0].w, dims[0].h, maxCellSize);
+    const canvas = new OffscreenCanvas(s.w, s.h);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, s.w, s.h);
+    ctx.drawImage(frames[0], 0, 0, s.w, s.h);
+    try { frames[0].close(); } catch (e) {}
+    const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 });
+    const base64 = arrayBufferToBase64(await out.arrayBuffer());
+    return { base64, frameCount: 1 };
+  }
+
+  // 多帧动图：2 帧采用 1x2 横排，3~4 帧采用 2x2 四宫格拼接（大幅提高每帧文字清晰度）
+  const cell = scaleDim(dims[0].w, dims[0].h, maxCellSize);
+  const cols = 2;
+  const rows = frames.length > 2 ? 2 : 1;
+  const gap = 6;
+  const totalW = cols * cell.w + (cols - 1) * gap;
+  const totalH = rows * cell.h + (rows - 1) * gap;
 
   const canvas = new OffscreenCanvas(totalW, totalH);
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#ffffff"; // 透明表情包铺白底，避免转 JPEG 后变黑
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, totalW, totalH);
 
-  let x = 0;
   frames.forEach((f, i) => {
-    ctx.drawImage(f, x, 0, scaled[i].w, scaled[i].h);
-    x += scaled[i].w + gap;
-    try {
-      f.close();
-    } catch (e) {}
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = col * (cell.w + gap);
+    const y = row * (cell.h + gap);
+    ctx.drawImage(f, x, y, cell.w, cell.h);
+
+    // 标注帧序角标 #1~#4，辅助模型理解动作先后顺序
+    ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+    ctx.fillRect(x + 4, y + 4, 24, 18);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`#${i + 1}`, x + 8, y + 17);
+
+    try { f.close(); } catch (e) {}
   });
 
-  const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.88 });
   const base64 = arrayBufferToBase64(await out.arrayBuffer());
   return { base64, frameCount: frames.length };
 }
@@ -186,12 +256,7 @@ async function describeMedia({ src, dataUrl, cacheKey, vision }) {
   if (dataUrl) {
     blob = await (await fetch(dataUrl)).blob();
   } else if (src) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 6000);
-    const resp = await fetch(src, { credentials: "omit", signal: controller.signal });
-    clearTimeout(t);
-    if (!resp.ok) throw new Error(`图片下载失败 HTTP ${resp.status}`);
-    blob = await resp.blob();
+    blob = await fetchImageBlobResilient(src, 6500);
   } else {
     return { success: false, error: "无图片来源" };
   }
@@ -203,15 +268,14 @@ async function describeMedia({ src, dataUrl, cacheKey, vision }) {
   const imageUrl = isZhipu ? base64 : `data:image/jpeg;base64,${base64}`;
 
   const framesHint = frameCount > 1
-    ? `这是一张动图按时间顺序截取的 ${frameCount} 帧，从左到右拼在一起。`
+    ? `这是一张动态表情包按时间顺序截取的 ${frameCount} 个关键帧（已标 #1~#${frameCount}）。`
     : "";
 
-  const prompt = `${framesHint}这是社交聊天中朋友发来的一张网络梗图/表情包/动图/截图。
-【识别核心要求】：
-1. 客观、真实、接地气指出真实搞怪动作（如狗/猫弓背拉屎、放屁、翻白眼、竖中指、嘲讽笑、瘫坐摆烂、磕头求饶、发疯等），严禁文艺美化或回避遮掩（例如：小狗拉屎绝不能说成蹲坐等喂食）！
-2. 图上有文字必须一字不差原样提炼出来（文字往往是梗的精髓）。
-3. 准确点明该表情包在网络语境下的恶搞意图或梗（如恶心对方、嘲讽挑衅、自嘲、无语裂开、震惊、看戏吃瓜等）。
-请在 35 字以内直接输出一句精炼大白话描述，严禁分点，严禁前缀废话。`;
+  const prompt = `${framesHint}这是抖音私聊中朋友发来的一张表情包/梗图/截图。请作为懂中文互联网热梗的高手，直接提取3个核心信息：
+1.【画面与配字】图里如果有字必须一字不差原样写出！并客观接地气点出角色表情或恶搞动作（如翻白眼、坏笑、猫狗拉屎/呕吐、熊猫头嘲讽、流汗、瘫坐摆烂、给大佬跪下、捏拳要打人等，严禁文雅美化！）；
+2.【网络热梗/槽点】点明这是什么网络梗或搞笑反差；
+3.【社交潜台词】对方发这张图想表达什么态度或情绪（如：阴阳怪气嘲讽、无语裂开、敷衍糊弄、故意恶心人、卖萌求饶、看戏吃瓜、炫耀、催促等）。
+请在 55 字以内用紧凑的一句话直接输出，格式如：“画面是xxx，配字‘xxx’，潜台词是xxx”，严禁换行或多余客套。`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -234,7 +298,7 @@ async function describeMedia({ src, dataUrl, cacheKey, vision }) {
           }
         ],
         temperature: 0.2,
-        max_tokens: 120
+        max_tokens: 150
       }),
       signal: controller.signal
     });
@@ -481,32 +545,39 @@ async function retryPendingQueue(queue, apiKey) {
 /**
  * 预处理多模态消息中的图片：将外部 CDN 或网络图片下载并使用 OffscreenCanvas 转为标准 Base64 Data URL
  */
-async function prepareMultimodalMessages(messages) {
+async function prepareMultimodalMessages(messages, baseUrl = "") {
   if (!Array.isArray(messages)) return messages;
   const clone = JSON.parse(JSON.stringify(messages));
+  const isZhipu = /bigmodel\.cn/i.test(baseUrl);
+
   for (const m of clone) {
     if (Array.isArray(m.content)) {
+      const validParts = [];
       for (const part of m.content) {
         if (part && part.type === "image_url" && part.image_url && part.image_url.url) {
           const rawUrl = part.image_url.url;
-          if (rawUrl.startsWith("data:image/")) continue;
+          if (rawUrl.startsWith("data:image/")) {
+            if (isZhipu) {
+              part.image_url.url = rawUrl.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, "");
+            }
+            validParts.push(part);
+            continue;
+          }
           if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
             try {
-              const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), 6000);
-              const resp = await fetch(rawUrl, { credentials: "omit", signal: controller.signal });
-              clearTimeout(timer);
-              if (resp.ok) {
-                const blob = await resp.blob();
-                const { base64 } = await prepareImageFromBlob(blob);
-                part.image_url.url = `data:image/jpeg;base64,${base64}`;
-              }
+              const blob = await fetchImageBlobResilient(rawUrl, 6000);
+              const { base64 } = await prepareImageFromBlob(blob);
+              part.image_url.url = isZhipu ? base64 : `data:image/jpeg;base64,${base64}`;
+              validParts.push(part);
             } catch (e) {
               console.warn("[多模态识图] 图片下载转Base64失败:", e.message);
             }
           }
+        } else if (part) {
+          validParts.push(part);
         }
       }
+      m.content = validParts.length > 0 ? validParts : "[发来图片表情包]";
     }
   }
   return clone;
@@ -531,8 +602,12 @@ function flattenMultimodalMessagesToText(messages) {
   });
 }
 
+function hasMultimodalArrayContent(messages) {
+  return Array.isArray(messages) && messages.some((m) => Array.isArray(m.content));
+}
+
 /**
- * 调用大语言模型对话接口 (支持自定义多接口列表、多模态直接看图、DeepSeek/Qwen/GLM/OpenAI兼容端点)
+ * 调用大语言模型对话接口 (支持自定义多接口列表、多模态直接看图、不兼容时自动无缝降级纯文本重试)
  */
 async function handleChatModelCall({
   apiProfile,
@@ -554,21 +629,13 @@ async function handleChatModelCall({
     return { success: false, error: `未配置 API 密钥 (当前接口: ${profile.name || targetModel})` };
   }
 
-  // 1. 根据是否多模态，决定图片格式或平铺纯文本
-  let processedMessages = messages;
-  if (isMultimodal) {
-    processedMessages = await prepareMultimodalMessages(messages);
-  } else {
-    processedMessages = flattenMultimodalMessagesToText(messages);
-  }
-
-  try {
+  const sendOnce = async (msgPayload) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 22000);
 
     const bodyPayload = {
       model: targetModel,
-      messages: processedMessages,
+      messages: msgPayload,
       temperature: typeof profile.temperature === "number" ? profile.temperature : temperature,
       max_tokens: 150
     };
@@ -578,17 +645,42 @@ async function handleChatModelCall({
       bodyPayload.frequency_penalty = frequency_penalty;
     }
 
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${cleanKey}`
-      },
-      body: JSON.stringify(bodyPayload),
-      signal: controller.signal
-    });
+    try {
+      const response = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${cleanKey}`
+        },
+        body: JSON.stringify(bodyPayload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      throw e;
+    }
+  };
 
-    clearTimeout(timeoutId);
+  // 1. 根据是否多模态，决定图片格式或平铺纯文本
+  let processedMessages = messages;
+  const hadImages = hasMultimodalArrayContent(messages);
+  if (isMultimodal && hadImages) {
+    processedMessages = await prepareMultimodalMessages(messages, targetUrl);
+  } else {
+    processedMessages = flattenMultimodalMessagesToText(messages);
+  }
+
+  try {
+    let response = await sendOnce(processedMessages);
+
+    // 2. 智能容错回退：如果用户勾选了“支持多模态”，但当前模型端点实际只收纯文本 string（报错 400/422），自动平铺为文本无缝重试一次！
+    if (!response.ok && isMultimodal && hadImages && (response.status === 400 || response.status === 422 || response.status === 415 || response.status === 500)) {
+      console.warn(`[多模态回退] 模型 ${targetModel} 返回 HTTP ${response.status}，自动降级为纯文本结构重试...`);
+      const textOnlyMessages = flattenMultimodalMessagesToText(messages);
+      response = await sendOnce(textOnlyMessages);
+    }
 
     if (!response.ok) {
       const errText = await response.text();

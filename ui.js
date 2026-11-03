@@ -1,4 +1,4 @@
-// 抖音火花助手 - UI 界面与反人机多维人格管理模块 (v1.3.0)
+// 抖音火花助手 - UI 界面与反人机多维人格管理模块 (v2.4.0)
 (function () {
   if (window.DySparkUI) return;
 
@@ -860,12 +860,22 @@
 
     visionTestBtn.addEventListener("click", async (e) => {
       e.preventDefault();
-      if (!currentConfig.visionApiKey) {
-        log("请先填写视觉模型 API Key", "warn");
+      let testVisionCfg = getVisionConfig();
+      const activeApi = getActiveApiProfile();
+      if (!testVisionCfg.apiKey && activeApi && activeApi.isMultimodal && activeApi.apiKey) {
+        testVisionCfg = {
+          enabled: true,
+          apiKey: activeApi.apiKey,
+          baseUrl: activeApi.baseUrl,
+          model: activeApi.model
+        };
+      }
+      if (!testVisionCfg.apiKey) {
+        log("请先在上方配置支持多模态的主模型 Key，或在下方填写辅助视觉模型 API Key", "warn");
         return;
       }
       visionTestBtn.disabled = true;
-      log("正在测试视觉模型（识别一张测试图）...", "info");
+      log(`正在测试视觉识图能力（使用模型: ${testVisionCfg.model}）...`, "info");
       try {
         const c = document.createElement("canvas");
         c.width = 160;
@@ -881,12 +891,12 @@
             action: "DESCRIBE_MEDIA",
             dataUrl: c.toDataURL("image/png"),
             cacheKey: "vision_test_" + Date.now(),
-            vision: getVisionConfig()
+            vision: testVisionCfg
           },
           20000
         );
         if (res && res.success) {
-          log(`✔ 视觉模型可用，识别结果: ${res.desc}`, "success");
+          log(`✔ 视觉识图可用，识别结果: ${res.desc}`, "success");
         } else {
           log(`❌ 视觉模型失败: ${res ? res.error : "无响应"}`, "error");
         }
@@ -973,7 +983,7 @@
 
         renderPersonaTabsAndCard(false);
         updateStatus(currentConfig.enabled);
-        log("抖音火花助手 AI 已就绪 (v2.3.0 自定义多模型+多模态直接识图版)", "info");
+        log("抖音火花助手 AI 已就绪 (v2.4.0 深度表情包潜台词识别+真人交互版)", "info");
         const activeApi = getActiveApiProfile();
         if (activeApi && !activeApi.apiKey) {
           log(`ℹ 提示：当前选中的【${activeApi.name}】未配置 API Key，请在上方填写`, "warn");

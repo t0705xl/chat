@@ -1,4 +1,4 @@
-// 抖音火花助手 - 深度语义接话 + 全尺寸表情包感知 + 高并发防罢工引擎 (v1.9.0)
+// 抖音火花助手 - 深度语义接话 + 全尺寸表情包潜台词感知 + 去人机拟真交互引擎 (v2.4.0)
 (function () {
   let isProcessing = false;
   let processingStartTime = 0;
@@ -180,7 +180,151 @@
   let botSentTexts = new Set();
   let ownStyleSamples = [];
   const recentBotRepliesByFriend = new Map();
+  const lastUsedEmojiByFriend = new Map();
   let styleSaveTimer = null;
+
+  // 抖音网页端官方合法原生表情白名单与近义词映射表（彻底根治大模型输出微信表情如[旺柴][破涕为笑]或动作描写[挑眉]导致穿帮！）
+  const VALID_DOUYIN_EMOJIS = new Set([
+    "微笑", "色", "发呆", "得意", "流泪", "害羞", "闭嘴", "睡", "大哭", "尴尬",
+    "发怒", "调皮", "呲牙", "惊讶", "难过", "酷", "冷汗", "抓狂", "吐", "偷笑",
+    "可爱", "白眼", "傲慢", "饥饿", "困", "惊恐", "流汗", "憨笑", "悠闲", "奋斗",
+    "咒骂", "疑问", "嘘", "晕", "折磨", "衰", "骷髅", "敲打", "再见", "擦汗",
+    "抠鼻", "鼓掌", "糗大了", "坏笑", "左哼哼", "右哼哼", "哈欠", "鄙视", "委屈", "快哭了",
+    "阴险", "亲亲", "吓", "可怜", "菜刀", "西瓜", "啤酒", "篮球", "乒乓", "咖啡",
+    "饭", "猪头", "玫瑰", "凋谢", "示爱", "爱心", "心碎", "蛋糕", "闪电", "炸弹",
+    "刀", "足球", "瓢虫", "便便", "月亮", "太阳", "礼物", "拥抱", "强", "弱",
+    "握手", "胜利", "抱拳", "勾引", "拳头", "差劲", "爱你", "NO", "OK",
+    "狗头", "捂脸", "泣不成声", "裂开", "苦涩", "叹气", "让我看看", "666", "社会社会", "加油",
+    "汗", "天啊", "Emm", "翻白眼", "打call", "比心", "吃瓜", "笑哭", "机智", "皱眉",
+    "耶", "灵机一动", "来看我", "灵光一闪", "敬礼", "石化", "摸头", "送心", "赞", "鼓掌"
+  ]);
+
+  const EMOJI_ALIAS_MAP = {
+    "旺柴": "狗头",
+    "doge": "狗头",
+    "Doge": "狗头",
+    "DOGE": "狗头",
+    "滑稽": "狗头",
+    "斜眼笑": "狗头",
+    "狗": "狗头",
+    "破涕为笑": "泣不成声",
+    "笑哭了": "泣不成声",
+    "笑死": "泣不成声",
+    "笑尿": "泣不成声",
+    "哭笑不得": "泣不成声",
+    "哈哈": "呲牙",
+    "大笑": "呲牙",
+    "狂笑": "泣不成声",
+    "无语": "裂开",
+    "绝望": "裂开",
+    "崩溃": "裂开",
+    "吐血": "裂开",
+    "流泪": "流泪",
+    "泪奔": "大哭",
+    "哭": "大哭",
+    "痛哭": "大哭",
+    "捂脸哭": "捂脸",
+    "没眼看": "捂脸",
+    "扶额": "捂脸",
+    "嫌弃": "白眼",
+    "翻白眼": "白眼",
+    "切": "白眼",
+    "思考": "疑问",
+    "想一下": "疑问",
+    "问号": "疑问",
+    "黑人问号": "疑问",
+    "呕吐": "吐",
+    "恶心": "吐",
+    "生气": "发怒",
+    "怒": "发怒",
+    "火大": "发怒",
+    "牛": "强",
+    "牛逼": "666",
+    "大拇指": "赞",
+    "点赞": "赞",
+    "心": "爱心",
+    "红心": "爱心",
+    "作揖": "抱拳",
+    "拱手": "抱拳",
+    "求饶": "抱拳",
+    "拜托": "抱拳"
+  };
+
+  /**
+   * 规范化并清洗回复中的 [xxx] 表情代码：
+   * 1. 将微信/B站/通用表情名自动转为抖音原生表情
+   * 2. 自动剔除大模型胡编的动作心理描写（如 [挑眉]、[歪头笑]、[耸肩]）
+   * 3. 防疲劳：如果连续两轮对同一好友用了同一个表情，自动替换为同情绪变体或偶发省略
+   */
+  function normalizeDouyinEmojis(text, friendName = "") {
+    if (!text) return "";
+    const lastEmoji = friendName ? (lastUsedEmojiByFriend.get(friendName) || "") : "";
+    let usedCount = 0;
+    let currentTurnEmoji = "";
+
+    const cleaned = text.replace(/\[([^\[\]\s]{1,8})\]/g, (full, rawName) => {
+      const name = rawName.trim();
+      let mapped = EMOJI_ALIAS_MAP[name] || (VALID_DOUYIN_EMOJIS.has(name) ? name : "");
+      if (!mapped) {
+        // 非法或小说式动作描写（如[挑眉][坏笑一下]），直接剥离不留方括号
+        return "";
+      }
+      usedCount++;
+      if (usedCount > 2) {
+        // 单条消息最多保留 2 个表情，防止刷屏感
+        return "";
+      }
+      // 防表情复读疲劳：如果上一句刚发过一模一样的表情，自动轮换一个相近表情
+      if (mapped === lastEmoji && usedCount === 1) {
+        const alternatives = {
+          "狗头": ["坏笑", "呲牙", "捂脸"],
+          "捂脸": ["泣不成声", "裂开", "流汗"],
+          "泣不成声": ["捂脸", "呲牙", "笑哭"],
+          "裂开": ["捂脸", "白眼", "叹气"],
+          "白眼": ["鄙视", "抠鼻", "裂开"]
+        };
+        const altList = alternatives[mapped];
+        if (altList && altList.length > 0) {
+          mapped = altList[Math.floor(Math.random() * altList.length)];
+        }
+      }
+      currentTurnEmoji = mapped;
+      return `[${mapped}]`;
+    });
+
+    if (friendName && currentTurnEmoji) {
+      lastUsedEmojiByFriend.set(friendName, currentTurnEmoji);
+    }
+    return cleaned;
+  }
+
+  /**
+   * 回复文本拟真净化器：剔除 AI 腔起手式、前缀、句尾句号、多余标点与非法表情
+   */
+  function humanizeBotReplyText(rawReply, friendName = "") {
+    if (!rawReply) return "";
+    let t = String(rawReply).replace(/[\r\n\t]+/g, " ").trim();
+
+    // 1. 剥离可能泄露的角色前缀与成对引号
+    t = t.replace(/^(我|号主|回复|AI|助手|Bot)[：:]\s*/i, "");
+    t = t.replace(/^["'“‘「『]+|["'”’」』]+$/g, "").trim();
+
+    // 2. 剥离典型“人机敷衍起手式”（仅当后面还有实质内容时剥离前导客套）
+    const roboticOpeners = /^(哈哈确实[，,、\s]*|确实啊[，,、\s]*|你说得对[，,、\s]*|好呀[，,、\s]*|那挺好的[，,、\s]*|也是哈[，,、\s]*|嗯嗯[，,、\s]+)/;
+    if (roboticOpeners.test(t) && t.replace(roboticOpeners, "").trim().length >= 3) {
+      t = t.replace(roboticOpeners, "").trim();
+    }
+
+    // 3. 转换并净化抖音表情代码
+    t = normalizeDouyinEmojis(t, friendName);
+
+    // 4. 去除真人私聊绝不会打的句末句号与波浪号
+    t = t.replace(/[。.~～]+$/g, "").trim();
+    // 如果表情后面紧跟句号，如 [狗头]。 -> [狗头]
+    t = t.replace(/(\[[^\[\]]+\])[。.~～，,]+$/g, "$1").trim();
+
+    return t || rawReply.trim();
+  }
 
   function loadPersistedStyleData() {
     try {
@@ -882,10 +1026,78 @@
   }
 
   /**
-   * 调用后台视觉模型解析图片/表情包/动图画面内容 (v2.2.0)
+   * 统一获取可用的视觉识别配置 (v2.4.0)：
+   * 1. 若用户单独配置了底部的二级视觉模型 Key，优先使用；
+   * 2. 若底部未填，但顶部当前激活的主对话模型勾选了“支持多模态看图 (isMultimodal)”且有 Key，自动复用主接口先提取表情包潜台词并写入缓存！
+   */
+  function getEffectiveVisionConfig() {
+    const secondary = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
+    if (secondary && secondary.enabled && secondary.apiKey) {
+      return secondary;
+    }
+    const activeProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
+    if (activeProfile && activeProfile.isMultimodal && activeProfile.apiKey && activeProfile.baseUrl && activeProfile.model) {
+      return {
+        enabled: true,
+        apiKey: activeProfile.apiKey,
+        baseUrl: activeProfile.baseUrl,
+        model: activeProfile.model
+      };
+    }
+    return null;
+  }
+
+  /**
+   * 尝试将页面上的 <canvas>、<video> 或 blob: <img> 实时截取为 Base64 Data URL，避免后台无法下载 blob/视频帧
+   */
+  function tryCaptureElementAsDataUrl(media) {
+    if (!media) return "";
+    try {
+      if (media.tagName === "CANVAS") {
+        return media.toDataURL("image/jpeg", 0.85);
+      }
+      if (media.tagName === "VIDEO") {
+        if (media.readyState >= 2 && media.videoWidth > 0 && media.videoHeight > 0) {
+          const c = document.createElement("canvas");
+          const maxDim = 480;
+          const scale = Math.min(1, maxDim / Math.max(media.videoWidth, media.videoHeight));
+          c.width = Math.max(1, Math.round(media.videoWidth * scale));
+          c.height = Math.max(1, Math.round(media.videoHeight * scale));
+          const ctx = c.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(media, 0, 0, c.width, c.height);
+          return c.toDataURL("image/jpeg", 0.85);
+        }
+        return "";
+      }
+      if (media.tagName === "IMG" && media.complete && media.naturalWidth > 0) {
+        const src = media.currentSrc || media.src || "";
+        if (src.startsWith("blob:") || src.startsWith("data:")) {
+          const c = document.createElement("canvas");
+          const maxDim = 512;
+          const scale = Math.min(1, maxDim / Math.max(media.naturalWidth, media.naturalHeight));
+          c.width = Math.max(1, Math.round(media.naturalWidth * scale));
+          c.height = Math.max(1, Math.round(media.naturalHeight * scale));
+          const ctx = c.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(media, 0, 0, c.width, c.height);
+          return c.toDataURL("image/jpeg", 0.85);
+        }
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  /**
+   * 调用后台视觉模型解析图片/表情包/动图画面内容与网络热梗潜台词 (v2.4.0)
    */
   async function enrichMediaDescriptions(items, visionConfig) {
-    if (!visionConfig || !visionConfig.enabled || !visionConfig.apiKey) return;
+    const effectiveVision = visionConfig && visionConfig.enabled && visionConfig.apiKey
+      ? visionConfig
+      : getEffectiveVisionConfig();
+    if (!effectiveVision || !effectiveVision.apiKey) return;
     if (!Array.isArray(items) || items.length === 0) return;
 
     for (const m of items) {
@@ -895,7 +1107,7 @@
         // 1. 本地内存命中：直接复用，免发后台请求
         if (cleanKey && localMediaDescCache.has(cleanKey)) {
           const cached = localMediaDescCache.get(cleanKey);
-          m.text = `[发来图片/表情包，画面内容: ${cached}]`;
+          m.text = `[发来图片/表情包，画面与潜台词: ${cached}]`;
           m.hasSpecificMeaning = true;
           m.isUnlabeledSticker = false;
           if (m.mediaElement && m.mediaElement.dataset) {
@@ -916,9 +1128,9 @@
               src: m.mediaSrc,
               dataUrl: m.dataUrl || "",
               cacheKey: cleanKey,
-              vision: visionConfig
+              vision: effectiveVision
             },
-            10000
+            11000
           );
           if (res && res.success && res.desc) {
             const desc = res.desc.replace(/[\r\n\t]/g, " ").trim();
@@ -928,11 +1140,11 @@
             if (m.mediaElement && m.mediaElement.dataset) {
               m.mediaElement.dataset.dyStickerMeaning = desc;
             }
-            m.text = `[发来图片/表情包，画面内容: ${desc}]`;
+            m.text = `[发来图片/表情包，画面与潜台词: ${desc}]`;
             m.hasSpecificMeaning = true;
             m.isUnlabeledSticker = false;
             if (window.DySparkUI) {
-              window.DySparkUI.log(`👁️ 视觉模型识别画面: "${desc}"`, "info");
+              window.DySparkUI.log(`👁️ 识别表情包潜台词: "${desc}"`, "info");
             }
           }
         } catch (e) {}
@@ -941,7 +1153,7 @@
   }
 
   /**
-   * 视觉几何 + 全尺寸表情包/Emoji/动图感知消息解析引擎 (v2.1.0)
+   * 视觉几何 + 全尺寸表情包/Emoji/动图感知消息解析引擎 (v2.4.0)
    */
   function extractMessagesWithGeometry(container) {
     if (!container) return [];
@@ -1011,13 +1223,10 @@
       if (isChatAvatarImage(media, containerRect)) continue;
 
       const ownership = analyzeMessageOwnership(media, container, containerRect, containerMidX);
-      const mediaSrc = media.currentSrc || media.src || media.getAttribute("src") || "";
-      let dataUrl = "";
-      if (media.tagName === "CANVAS") {
-        try {
-          dataUrl = media.toDataURL("image/jpeg", 0.85);
-        } catch (e) {}
-      }
+      const fiberUrl = media.dataset ? (media.dataset.dyFiberImgUrl || "") : "";
+      const rawSrc = media.currentSrc || media.src || media.getAttribute("src") || media.poster || "";
+      const mediaSrc = (rawSrc && !rawSrc.startsWith("blob:")) ? rawSrc : (fiberUrl || rawSrc);
+      const dataUrl = tryCaptureElementAsDataUrl(media);
 
       const cleanSrc = (mediaSrc || "").split("?")[0];
       const cachedDesc = cleanSrc ? (localMediaDescCache.get(cleanSrc) || "") : "";
@@ -1081,7 +1290,7 @@
         msgType = "video";
         mediaDesc = cardText ? `[分享了抖音视频: ${cardText.substring(0, 35)}]` : `[分享了一个抖音视频]`;
       } else if (specificMeaning) {
-        mediaDesc = `[发来表情包，画面含义: ${specificMeaning}]`;
+        mediaDesc = `[发来表情包，画面与潜台词: ${specificMeaning}]`;
       } else {
         isUnlabeledSticker = true;
         mediaDesc = `[发来一张图片/表情包/动图]`;
@@ -1201,6 +1410,75 @@
   }
 
   /**
+   * 获取当前真实本地时间与作息语境（防止深夜说“刚起床”、早上说“吃晚饭”等人机穿帮）
+   */
+  function getTimeOfDayContext() {
+    const now = new Date();
+    const h = now.getHours();
+    const m = String(now.getMinutes()).padStart(2, "0");
+    let period = "白天";
+    if (h >= 0 && h < 5) period = "凌晨熬夜/修仙时段";
+    else if (h >= 5 && h < 9) period = "清晨/早起时段";
+    else if (h >= 9 && h < 12) period = "上午时段";
+    else if (h >= 12 && h < 14) period = "中午午休/午饭时段";
+    else if (h >= 14 && h < 18) period = "下午时段";
+    else if (h >= 18 && h < 20) period = "傍晚/晚饭时段";
+    else if (h >= 20 && h < 23) period = "晚上休闲刷手机时段";
+    else period = "深夜准备入睡/夜猫子时段";
+    return `${h}:${m}（${period}）`;
+  }
+
+  /**
+   * 深度意图与表情包斗图交互引擎 (v2.4.0)：
+   * 精准识别对方是在【斗图玩梗】、【提问】、【分享日常/吐槽】还是【短词敷衍】，指导大模型做出最像真人的反应
+   */
+  function analyzeConversationIntent(unreadIncomingList, historySlice) {
+    const rawTexts = unreadIncomingList.map(m => m.text).join(" ");
+    const allStickers = unreadIncomingList.every(m => m.msgType === "sticker");
+    const hasSticker = unreadIncomingList.some(m => m.msgType === "sticker" || m.msgType === "image");
+    const prevIncomingWasSticker = historySlice.length > 0 && !historySlice[historySlice.length - 1].isSelf && historySlice[historySlice.length - 1].msgType === "sticker";
+
+    if (allStickers) {
+      if (prevIncomingWasSticker || unreadIncomingList.length >= 2) {
+        return {
+          intent: "STICKER_BATTLE",
+          guide: "【斗图/连续发表情包模式】对方正在跟你斗图或用表情包整活！直接针对表情包里的配字或欠揍动作回敬一句简短吐槽（3~10字）+ 1个抖音表情（如[狗头][白眼][捂脸][泣不成声]），就像朋友间斗图互怼一样带感，绝不要像看图写话一样复述画面！"
+        };
+      }
+      return {
+        intent: "SINGLE_STICKER",
+        guide: "【单发表情包互动】对方发了一张表情包来表达情绪或试探你。直接顺着这张图的【潜台词/配字】接茬、吐槽或调侃一句（3~12字），配1个抖音表情（如[狗头][捂脸][裂开]），严禁生硬描述“你发了个xxx的图”！"
+      };
+    }
+
+    if (/(\?|？|吗|呢|啥|什么|哪|怎么|咋|谁|几|多少|是不是|有木有|有没有|能不能|行不行|干嘛|在不在)/.test(rawTexts)) {
+      return {
+        intent: "QUESTION",
+        guide: "【对方正在向你提问】必须先在第一句正面、干脆、接地气地回答对方问的具体问题！回答完可顺嘴反问或调侃半句，绝不能避而不答或顾左右而言他！"
+      };
+    }
+
+    if (!hasSticker && rawTexts.length <= 4 && /^(6+|哦+|嗯+|好+|行+|哈哈+|嘿嘿|切|啧|略略略|。+|\.+|ok|OK)$/.test(rawTexts.trim())) {
+      return {
+        intent: "SHORT_ACK",
+        guide: "【对方发来极短语气词/敷衍词】真人对付这种短词绝不会长篇大论！请同样用 2~8 字极短促地回敬（如“？[狗头]”、“敷衍谁呢[白眼]”、“6”、“切[抠鼻]”）。"
+      };
+    }
+
+    if (/(烦|累|困|饿|气死|无语|服了|倒霉|崩溃|不想|難受|难受|生病|加班|早八|考试|挂科|输了|连跪)/.test(rawTexts)) {
+      return {
+        intent: "SHARE_OR_VENT",
+        guide: "【对方在吐槽/倾诉近况】站在朋友立场上顺着他的情绪接话（共情吐槽、安慰或损友式调侃），千万不要像客服或老师一样讲大道理说教！"
+      };
+    }
+
+    return {
+      intent: "NORMAL_CHAT",
+      guide: "【日常熟人闲聊】紧扣对方刚说的具体字眼和话题核心自然接话，随性松弛，像微信/抖音秒回朋友一样。"
+    };
+  }
+
+  /**
    * 检测对话中是否存在恶意语言陷阱/套路/占便宜/恶心自贬陷阱 (v2.2.0)
    */
   function detectConversationalTrap(unreadIncomingList, historySlice) {
@@ -1259,12 +1537,12 @@
   }
 
   /**
-   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.3.0 支持多模态直传与深度去人机)
+   * 构建高拟真、真人说话口吻、情绪对等自适应的对话 Payload (v2.4.0 支持多模态直传、表情包潜台词交互与深度去人机)
    */
   function buildHumanizedPayload(persona, allMessages, unreadIncomingList, memoryContext = null, friendName = "", apiProfile = null) {
     const friendReplies = recentBotRepliesByFriend.get(friendName) || recentBotReplies.slice(-5);
     const antiRepeatRule = friendReplies.length > 0
-      ? `\n你刚跟对方说过：[${friendReplies.slice(-4).join(" / ")}]，本次禁止复读上面说过的词句或相同句式。`
+      ? `\n你刚跟对方说过：[${friendReplies.slice(-5).join(" / ")}]，本次禁止复读上面说过的词句、句式或相同的表情包。`
       : "";
 
     const userSamples = pickStyleSamples(6);
@@ -1288,17 +1566,21 @@
 
     let tonePrompt = "";
     if (incomingTone === "AGGRESSIVE" && isRoughPersona) {
-      tonePrompt = `【当前情境】对方先骂人或嘴臭挑衅了。针对他说的具体事情，用损友互损的糙话或粗口直接怼回去，损在点子上。单句短促（4~16字），可带[白眼][裂开][狗头]。`;
+      tonePrompt = `【当前情境】对方先骂人或嘴臭挑衅了。针对他说的具体事情，用损友互损的糙话或粗口直接怼回去，损在点子上。单句短促（4~15字），可带[白眼][裂开][狗头]。`;
     } else if (incomingTone === "PLAYFUL") {
-      tonePrompt = `【当前情境】对方在开玩笑、贫嘴或发表情互动。像好朋友一样轻松幽默地接梗或调侃，不用动真格骂脏话，4~16字，带[狗头][捂脸][泣不成声]等。`;
+      tonePrompt = `【当前情境】对方在开玩笑、贫嘴或发表情互动。像好朋友一样轻松幽默地接梗或调侃，不用动真格骂脏话，3~15字，可带[狗头][捂脸][泣不成声]等。`;
     } else {
-      tonePrompt = `【当前情境】对方在正常交流/问问题/聊日常，没有攻击你。像真实好朋友一样自然、靠谱地正面回答，绝对禁止无故骂人或攻击，随性口语（4~18字），不加句号。`;
+      tonePrompt = `【当前情境】对方在正常交流/问问题/聊日常，没有攻击你。像真实好朋友一样自然、靠谱地正面回答，绝对禁止无故骂人或攻击，随性口语（3~16字），不加句号。`;
     }
 
     // 提取当前未读消息之前的最近 32 条真实历史记录（超长上下文记忆，彻底告别单字短记忆失忆与呆滞断层）
     const historyEndIdx = Math.max(0, allMessages.length - unreadIncomingList.length);
     const historySlice = allMessages.slice(Math.max(0, historyEndIdx - 32), historyEndIdx);
     const lastHistoryTopic = historySlice.length > 0 ? historySlice[historySlice.length - 1].text : "";
+
+    const intentInfo = analyzeConversationIntent(unreadIncomingList, historySlice);
+    const timeContext = getTimeOfDayContext();
+    const isMultimodal = apiProfile ? !!apiProfile.isMultimodal : false;
 
     const rawTexts = unreadIncomingList.map(m => m.text);
     const allAreStickers = unreadIncomingList.every(m => m.msgType === "sticker");
@@ -1309,15 +1591,15 @@
     let mediaInstruction = "";
     if (hasSpecificMeaningSticker) {
       const meanings = unreadIncomingList.filter(m => m.hasSpecificMeaning).map(m => m.text);
-      mediaInstruction = `\n对方发来了表情包/图片：${meanings.join(" ")}。请结合画面里的具体搞怪动作或文字接梗、吐槽或回应，像真人看到朋友发这图时的即时反应！`;
-    } else if (allAreStickers) {
-      if (hasUnlabeledSticker) {
-        mediaInstruction = lastHistoryTopic
-          ? `\n对方发了一张自定义图片表情包（看不到画面）。顺着刚才聊的（“${lastHistoryTopic}”）自然接一句，或者随手回个表情（如“笑死我了[泣不成声]”、“服了[捂脸]”、“斗图是吧[狗头]”），严禁乱猜画面！`
-          : `\n对方单发了一张表情包。随手回个表情或问一句（如“？[狗头]”、“发这啥意思[捂脸]”、“[狗头][狗头]”），控制在 2~12 字，严禁瞎猜图里画了什么！`;
-      }
+      mediaInstruction = `\n【表情包/梗图互动】对方发来了：${meanings.join(" ")}。\n⚠️ 互动铁律：你已经看懂了这张图的画面、配字与社交潜台词！严禁呆板地把画面描述复述一遍（绝对不要说“你发了个xxx的图”），而是像真人朋友看到这张梗图一样，直接针对它的【配字或潜台词】接梗、回怼、吐槽或顺着演下去（3~14字）！`;
+    } else if (isMultimodal && unreadIncomingList.some(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && (m.dataUrl || m.mediaSrc))) {
+      mediaInstruction = `\n【多模态直接看图】对方发来了图片/表情包（已直接附在消息图片中）。请仔细看清图上的【文字配字、搞笑动作与网络热梗潜台词】，直接针对图里的梗或潜台词做出真人的秒回反应（吐槽、接梗或回敬表情），严禁像做看图写话一样描述图片内容！`;
+    } else if (allAreStickers && hasUnlabeledSticker) {
+      mediaInstruction = lastHistoryTopic
+        ? `\n对方发了一张表情包。请顺着刚才聊的（“${lastHistoryTopic}”）自然接一句，或者随手回个表情（如“笑死[泣不成声]”、“服了[捂脸]”、“斗图是吧[狗头]”），控制在 2~10 字。`
+        : `\n对方单发了一张表情包。随手回个表情或调侃一句（如“？[狗头]”、“发这啥意思[捂脸]”、“少来这套[白眼]”），控制在 2~10 字。`;
     } else if (allAreVideos) {
-      mediaInstruction = `\n对方分享了抖音视频：${rawTexts.join(" ")}。针对视频内容随口接话或吐槽，4~16字。`;
+      mediaInstruction = `\n对方分享了抖音视频：${rawTexts.join(" ")}。针对视频标题或内容随口接话或吐槽，4~15字。`;
     }
 
     // 防套路与反恶搞语言圈套检测
@@ -1330,32 +1612,33 @@
       }
     }
 
-    const commonSenseRule = `\n【防套路常识与自尊底线】
+    const commonSenseRule = `\n【当前真实时间】${timeContext}（聊到吃饭/睡觉/在干嘛时必须符合当前真实时间段，严禁大晚上说早上好或刚起床！）
+${intentInfo.guide}
+【防套路常识与自尊底线】
 1. 严禁掉入对方的恶意或恶搞语言圈套！绝不能答应吃恶心东西、吃屎，对方说“喂你吃/请你吃”恶心东西或前文发了拉屎图，绝不能说“我张嘴了”、“你喂吧”、“被你看穿了”、“我想吃”，必须机敏识破并反怼对方（如“喂你妈呢你自己吃吧”、“恶心不恶心”）；
 2. 绝不能被占便宜当儿子或认爹，对方叫你喊爹坚决怼回；
-3. 听懂网络热梗与阴阳怪气，结合前文真实历史与表情包画面连贯理解，严禁无脑顺从对方的恶俗调侃。`;
+3. 听懂网络热梗、谐音梗与阴阳怪气，结合前文真实历史与表情包画面连贯理解，严禁无脑顺从对方的恶俗调侃。`;
 
     const antiNpcRules = `\n【🔥 绝杀“人机感”硬核规范（违者视为严重故障）】
-1. 【字数短脆，禁止长篇大论】：真人手机打字绝大多数在 3~14 字！偶尔一两句不超过 20 字，严禁发小作文。
+1. 【字数短脆，像手机随手秒回】：真人私信打字绝大多数在 3~14 字！最多不超过 18 字，严禁长篇大论。
 2. 【严禁“人机空洞客套”】：绝对禁止“哈哈确实”、“确实啊”、“你说得对”、“好呀”、“那挺好的”、“也是哈”等机器人起手式！
-3. 【严禁客服式追问】：绝对不要客套追问“你觉得呢？”、“你在忙什么呀？”、“你今天怎么样？”，自然表达自己的态度或随口唠嗑即可。
-4. 【针对笑点直接反应，绝不机械复读】：对方发表情包或聊具体事情，直接给真实情绪反应（赞同/吐槽/拆台/无语/接梗），严禁机械复读对方后半句。
-5. 【标点符号规范】：真人私信单句末尾【严禁使用句号“。”】！可以不加标点或空格，随性自然，情绪到位时可带 1 个抖音表情如 [狗头][捂脸][裂开][泣不成声][白眼]。
+3. 【严禁客服式追问】：绝对不要客套追问“你觉得呢？”、“你在忙什么呀？”、“你今天怎么样？”，直接表达你的态度或吐槽即可。
+4. 【绝不机械复读】：严禁把对方刚说的话或表情包上的字原封不动抄一遍当回复，要给“下一句反应”。
+5. 【标点与抖音原生表情规范】：单句末尾【严禁使用句号“。”】！如需带表情，只能从抖音官方原生表情中选 1 个：\`[狗头]\`、\`[捂脸]\`、\`[泣不成声]\`、\`[裂开]\`、\`[白眼]\`、\`[呲牙]\`、\`[坏笑]\`、\`[流汗]\`、\`[疑问]\`、\`[吃瓜]\`、\`[666]\`、\`[赞]\`、\`[抱拳]\`、\`[发怒]\`、\`[吐]\`、\`[大哭]\`、\`[可怜]\`，严禁自造微信表情（如[旺柴][破涕为笑]）或动作描写（如[挑眉]）！
 【输出硬性要求】：只输出你要发给朋友的那一句话本身，严禁任何解释、前缀、引号或AI助理式说明。`;
 
-    const enhancedSystemPrompt = `你是这个抖音号的号主本人，正拿着手机跟朋友私聊。
+    const enhancedSystemPrompt = `你是这个抖音号的号主本人，正拿着手机跟朋友 [${friendName || "好友"}] 私聊。
 ${persona.prompt}
 ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memorySection}${mediaInstruction}${antiRepeatRule}`;
 
-    const isMultimodal = apiProfile ? !!apiProfile.isMultimodal : false;
     const payload = [{ role: "system", content: enhancedSystemPrompt }];
 
     for (const h of historySlice) {
       const role = h.isSelf ? "assistant" : "user";
       const prevTurn = payload[payload.length - 1];
 
-      // 如果当前是多模态模式且历史该条为近期带图消息
-      if (isMultimodal && !h.isSelf && (h.msgType === "sticker" || h.msgType === "image") && (h.dataUrl || h.mediaSrc)) {
+      // 如果当前是多模态模式且历史该条为近期带图消息（仅对最近 4 条内的未标注图片传原图，已识别出文字含义的直接用文本即可省流提速）
+      if (isMultimodal && !h.isSelf && !h.hasSpecificMeaning && (h.msgType === "sticker" || h.msgType === "image") && (h.dataUrl || h.mediaSrc)) {
         payload.push({
           role: "user",
           content: [
@@ -1500,7 +1783,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
   }
 
   /**
-   * 检测当前私信聊天并回复（带视觉解析、风格自适应、公平轮转、防并发死锁）
+   * 检测当前私信聊天并回复（带视觉潜台词解析、风格自适应、公平轮转、防并发死锁）
    */
   async function checkCurrentChat(config) {
     const inputEl = findChatInput();
@@ -1543,7 +1826,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
     }
 
     // 视觉模型增强：解析待回复消息中的图片/表情包，同时自动为最近历史切片中未解析的表情包补齐画面描述（最多补2张），确保上下文连贯不失忆
-    const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
+    const effectiveVision = getEffectiveVisionConfig();
     const itemsToEnrich = [...unreadIncoming];
     const historyCandidates = messages
       .slice(Math.max(0, messages.length - unreadIncoming.length - 8), Math.max(0, messages.length - unreadIncoming.length))
@@ -1551,7 +1834,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
     for (const hc of historyCandidates.slice(-2)) {
       itemsToEnrich.push(hc);
     }
-    await enrichMediaDescriptions(itemsToEnrich, visionConfig);
+    await enrichMediaDescriptions(itemsToEnrich, effectiveVision);
 
     const preFlightFriendElements = new Set(
       messages.filter(m => !m.isSelf).map(m => m.element)
@@ -1597,14 +1880,14 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
       const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
       const payload = buildHumanizedPayload(persona, messages, unreadIncoming, memoryContext, friendName, apiProfile);
 
-      // 调用大模型接口（支持自定义多接口与多模态直接看图，带 18 秒超时保护）
+      // 调用大模型接口（支持自定义多接口与多模态直接看图，带 20 秒超时保护）
       const res = await sendMessageWithTimeout(
         { action: "CALL_CHAT_MODEL", apiProfile, apiKey: config.apiKey, messages: payload },
-        18000
+        20000
       );
 
       if (res && res.success && res.reply) {
-        const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
+        const cleanReply = humanizeBotReplyText(res.reply, friendName);
         const modelLabel = (apiProfile && apiProfile.name) || "大模型";
         window.DySparkUI.log(`🤖【${modelLabel}】回复: "${cleanReply}"`, "success");
 
@@ -1654,7 +1937,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
   async function forceReplyCurrent() {
     const config = window.DySparkUI ? window.DySparkUI.getConfig() : {};
     if (!config.apiKey) {
-      window.DySparkUI.log("请先配置 DeepSeek API Key", "warn");
+      window.DySparkUI.log("请先在面板中配置当前激活的大模型 API Key", "warn");
       return;
     }
 
@@ -1679,23 +1962,23 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
       : { groupId: "default", groupName: "默认通用", prompt: config.prompt };
 
     window.DySparkUI.log(`[测试发送] 好友[${friendName}] 启用人格【${persona.groupName}】...`, "info");
-    const visionConfig = window.DySparkUI && window.DySparkUI.getVisionConfig ? window.DySparkUI.getVisionConfig() : null;
+    const effectiveVision = getEffectiveVisionConfig();
     const testItems = [lastMsg];
     const historyCand = messages
       .slice(Math.max(0, messages.length - 6))
       .filter(m => (m.msgType === "sticker" || m.msgType === "image" || m.isUnlabeledSticker) && !m.hasSpecificMeaning && (m.mediaSrc || m.dataUrl));
     for (const hc of historyCand.slice(-2)) testItems.push(hc);
-    await enrichMediaDescriptions(testItems, visionConfig);
+    await enrichMediaDescriptions(testItems, effectiveVision);
     const apiProfile = window.DySparkUI && window.DySparkUI.getActiveApiProfile ? window.DySparkUI.getActiveApiProfile() : null;
     const payload = buildHumanizedPayload(persona, messages, [lastMsg], null, friendName, apiProfile);
 
     const res = await sendMessageWithTimeout(
       { action: "CALL_CHAT_MODEL", apiProfile, apiKey: config.apiKey, messages: payload },
-      18000
+      20000
     );
 
     if (res && res.success && res.reply) {
-      const cleanReply = res.reply.replace(/[\r\n\t]/g, " ").trim();
+      const cleanReply = humanizeBotReplyText(res.reply, friendName);
       markMessageReplied(lastMsg);
       friendLastServedAt.set(friendName, Date.now());
       const modelLabel = (apiProfile && apiProfile.name) || "大模型";
@@ -1713,7 +1996,7 @@ ${tonePrompt}${trapPrompt}${commonSenseRule}${antiNpcRules}${styleSection}${memo
 
   function runDiagnose() {
     const config = window.DySparkUI ? window.DySparkUI.getConfig() : {};
-    window.DySparkUI.log("===== 开始全面诊断 (v2.3.0) =====", "info");
+    window.DySparkUI.log("===== 开始全面诊断 (v2.4.0) =====", "info");
 
     const unread = findUnreadRedDots();
     if (unread.length > 0) {
